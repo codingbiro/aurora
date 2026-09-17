@@ -12,9 +12,13 @@
     // Origins allowed to call the proxy. "*" is fine for personal use; upstreams are allow-listed anyway.
     "ALLOWED_ORIGINS": "*",
     "DASHBOARD_URL": "https://aurora.birovince.com/",
-    "OBSERVER_LAT": "55.676",
-    "OBSERVER_LON": "12.568",
-    // Set to an ntfy.sh topic name to receive push notifications from the cron job; empty disables it.
+    // Places the cron job evaluates and alerts for. alertOn: "horizon" (edge within 8 deg, low in the north)
+    // or "overhead"; minKpLead: only alert when the Kp expected in the next hour is at least this.
+    // topic: optional ntfy topic per place; otherwise the NTFY_TOPIC secret is used for all.
+    "OBSERVERS": [
+      { "name": "Copenhagen", "lat": 55.676, "lon": 12.568, "alertOn": "horizon", "minKpLead": 0 }
+    ],
+    // Default ntfy.sh topic. Set as a secret (`wrangler secret put NTFY_TOPIC`) to keep it out of git; empty disables alerts.
     "NTFY_TOPIC": ""
   },
   "triggers": { "crons": ["*/5 * * * *"] },

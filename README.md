@@ -32,7 +32,18 @@ npm run worker:deploy    # uploads assets + Worker, (re)creates the custom domai
 
 The scheduled job can also be run on demand: `GET /api/cron` with `Authorization: Bearer <CRON_TOKEN>` (secret set with `wrangler secret put CRON_TOKEN`); `.github/workflows/cron.yml` calls it every 10 minutes as a fallback scheduler.
 
-Optional: set `NTFY_TOPIC` in `wrangler.jsonc` to an [ntfy.sh](https://ntfy.sh) topic and the cron will push a notification when the modeled oval edge comes within view of the configured observer (`OBSERVER_LAT`/`OBSERVER_LON`).
+### Alerts
+
+The cron evaluates every place listed under `OBSERVERS` in `wrangler.jsonc` and posts to [ntfy.sh](https://ntfy.sh) when the modeled oval comes within view. Each entry takes `name`, `lat`, `lon`, and optionally `alertOn` (`horizon` = edge within 8° so visible low in the north, the default; `overhead`), `minKpLead` (alert only when the Kp expected within the next hour is at least this) and `topic` (a per-place ntfy topic). The default topic is the `NTFY_TOPIC` secret (`wrangler secret put NTFY_TOPIC`); alerts are off while it is empty. At most one alert per place every two hours. Example:
+
+```jsonc
+"OBSERVERS": [
+  { "name": "Copenhagen", "lat": 55.676, "lon": 12.568, "alertOn": "horizon", "minKpLead": 0 },
+  { "name": "Tromsø", "lat": 69.649, "lon": 18.956, "alertOn": "overhead", "minKpLead": 2 }
+]
+```
+
+Redeploy after editing (`npm run worker:deploy`). The place shown in the dashboard is separate: it is chosen in the page and remembered per browser.
 
 ## Layout
 
