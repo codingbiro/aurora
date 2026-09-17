@@ -18,9 +18,9 @@
     "OBSERVERS": [
       { "name": "Copenhagen", "lat": 55.676, "lon": 12.568, "alertOn": "horizon", "minKpLead": 0 },
       { "name": "Tromsø", "lat": 69.649, "lon": 18.956, "alertOn": "overhead", "minKpLead": 2 }
-    ],
-    // Default ntfy.sh topic. Set as a secret (`wrangler secret put NTFY_TOPIC`) to keep it out of git; empty disables alerts.
-    "NTFY_TOPIC": ""
+    ]
+    // The default ntfy.sh topic is the NTFY_TOPIC secret (`wrangler secret put NTFY_TOPIC`); it must not also be listed
+    // here as a var, because a var with the same name overrides the secret. No secret = alerts off.
   },
   "triggers": { "crons": ["*/5 * * * *"] },
   "kv_namespaces": [{ "binding": "SNAP", "id": "dd50dac8c0f04bab948b911440aba450" }]
