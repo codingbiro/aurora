@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Aurora Model Check</title>
+<meta name="description" content="How well the aurora nowcast's activity model performs: calibration skill, reliability, live hindcast against observed indices, and CME arrival error statistics.">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="styles.css">
+<script src="config.js"></script>
+<script src="vendor/d3.v7.min.js"></script>
+</head>
+<body>
+<header class="masthead">
+  <div class="masthead-row">
+    <div class="brand"><h1>Model check</h1><p class="tagline">Is the activity model honest? Calibration skill, reliability and a live hindcast against the observed indices. <a href="./">Back to the dashboard</a></p></div>
+  </div>
+</header>
+<main class="grid">
+  <section class="panel" aria-labelledby="cal-title">
+    <div class="panel-head"><h2 id="cal-title">Calibration on two years of history</h2><p class="panel-sub" id="cal-sub"></p></div>
+    <div class="table-scroll"><table id="skill-table"></table></div>
+    <figure class="chart"><figcaption>Reliability: how often Hp30 actually reached the threshold, by predicted value</figcaption><div class="chart-body" id="reliability-chart"></div></figure>
+    <figure class="chart"><figcaption>Residuals of the fit on the test period</figcaption><div class="chart-body" id="residual-chart"></div></figure>
+    <div class="discussion" id="cal-notes"></div>
+  </section>
+  <section class="panel" aria-labelledby="live-title">
+    <div class="panel-head"><h2 id="live-title">Live hindcast, last 3 days</h2><p class="panel-sub" id="live-sub">Kp modeled from NOAA's propagated solar wind versus what was observed.</p></div>
+    <figure class="chart"><figcaption>Modeled Kp against observed Hp30 (GFZ, via iSWA mirror) and NOAA estimated Kp</figcaption><div class="chart-body" id="hindcast-chart"></div><div class="legend" id="hindcast-legend"></div></figure>
+    <div class="table-scroll"><table id="hindcast-table"></table></div>
+    <div class="panel-head"><h2>CME arrival predictions: historical error</h2><p class="panel-sub">From NASA CCMC's CME Scoreboard (observed arrivals since 2023).</p></div>
+    <div class="table-scroll"><table id="scoreboard-table"></table></div>
+  </section>
+</main>
+<footer class="footer"><p class="credits">Calibration target: GFZ Hp30 (CC BY 4.0). Inputs: NASA OMNI. Scoreboard: NASA CCMC.</p></footer>
+<script type="module" src="src/verify.mjs"></script>
+</body>
+</html>

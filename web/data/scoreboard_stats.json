@@ -1,0 +1,181 @@
+{
+ "generated": "2026-09-17T16:28:20.396Z",
+ "source": "https://kauai.ccmc.gsfc.nasa.gov/CMEscoreboard/WS/get/predictions",
+ "since": "2023-01-01T00:00:00.000Z",
+ "nCme": 280,
+ "signConvention": "differenceInHrs as published by the scoreboard (predicted minus observed arrival; positive = predicted too late)",
+ "methods": [
+  {
+   "name": "All methods",
+   "n": 2029,
+   "mae": 10.9,
+   "median": 8.2,
+   "bias": 0.115,
+   "within7h": 0.43,
+   "kpHit": 0.126,
+   "kpN": 1633
+  },
+  {
+   "name": "WSA-ENLIL + Cone (NASA M2M)",
+   "n": 399,
+   "mae": 10.3,
+   "median": 7.6,
+   "bias": -0.721,
+   "within7h": 0.469,
+   "kpHit": 0.103,
+   "kpN": 399
+  },
+  {
+   "name": "Average of all Methods",
+   "n": 280,
+   "mae": 9.9,
+   "median": 7.58,
+   "bias": 0.862,
+   "within7h": 0.457,
+   "kpHit": 0.086,
+   "kpN": 279
+  },
+  {
+   "name": "Median of all Methods",
+   "n": 280,
+   "mae": 9.87,
+   "median": 7.61,
+   "bias": 0.225,
+   "within7h": 0.471,
+   "kpHit": 0.115,
+   "kpN": 279
+  },
+  {
+   "name": "WSA-ENLIL + Cone (Met Office)",
+   "n": 151,
+   "mae": 10.6,
+   "median": 8.58,
+   "bias": 0.46,
+   "within7h": 0.424,
+   "kpHit": 0.141,
+   "kpN": 142
+  },
+  {
+   "name": "SIDC",
+   "n": 142,
+   "mae": 14.5,
+   "median": 11.6,
+   "bias": 5.26,
+   "within7h": 0.331,
+   "kpHit": 0.169,
+   "kpN": 142
+  },
+  {
+   "name": "CMEFM v.0.1",
+   "n": 138,
+   "mae": 13.2,
+   "median": 9.45,
+   "bias": 3.75,
+   "within7h": 0.384,
+   "kpHit": null,
+   "kpN": 0
+  },
+  {
+   "name": "EAM (Effective Acceleration Model)",
+   "n": 120,
+   "mae": 10.4,
+   "median": 9.04,
+   "bias": -1.82,
+   "within7h": 0.433,
+   "kpHit": null,
+   "kpN": 0
+  },
+  {
+   "name": "SARM",
+   "n": 110,
+   "mae": 11.3,
+   "median": 9.66,
+   "bias": -4.15,
+   "within7h": 0.391,
+   "kpHit": 0.182,
+   "kpN": 110
+  },
+  {
+   "name": "Ensemble WSA-ENLIL + Cone (NASA M2M)",
+   "n": 86,
+   "mae": 9.84,
+   "median": 8.17,
+   "bias": -3.76,
+   "within7h": 0.419,
+   "kpHit": 0.209,
+   "kpN": 86
+  },
+  {
+   "name": "WSA-ENLIL + Cone (NOAA/SWPC)",
+   "n": 70,
+   "mae": 10.7,
+   "median": 8.52,
+   "bias": 1.21,
+   "within7h": 0.371,
+   "kpHit": 0.098,
+   "kpN": 51
+  },
+  {
+   "name": "WSA-ENLIL + Cone (BoM)",
+   "n": 68,
+   "mae": 11.9,
+   "median": 9.38,
+   "bias": 0.967,
+   "within7h": 0.368,
+   "kpHit": 0.0746,
+   "kpN": 67
+  },
+  {
+   "name": "Cone + HAF (SEPC, NSSC, CAS)",
+   "n": 54,
+   "mae": 9.62,
+   "median": 7.67,
+   "bias": -1.23,
+   "within7h": 0.407,
+   "kpHit": 0.241,
+   "kpN": 54
+  },
+  {
+   "name": "ELEvo",
+   "n": 50,
+   "mae": 10.6,
+   "median": 7.6,
+   "bias": -4.62,
+   "within7h": 0.46,
+   "kpHit": null,
+   "kpN": 0
+  },
+  {
+   "name": "WSA-ENLIL + Cone (KSWC)",
+   "n": 29,
+   "mae": 9.42,
+   "median": 7.08,
+   "bias": 0.99,
+   "within7h": 0.483,
+   "kpHit": null,
+   "kpN": 0
+  }
+ ],
+ "donkiLike": [
+  {
+   "name": "WSA-ENLIL + Cone (NASA M2M)",
+   "n": 399,
+   "mae": 10.3,
+   "median": 7.6,
+   "bias": -0.721,
+   "within7h": 0.469,
+   "kpHit": 0.103,
+   "kpN": 399
+  },
+  {
+   "name": "Ensemble WSA-ENLIL + Cone (NASA M2M)",
+   "n": 86,
+   "mae": 9.84,
+   "median": 8.17,
+   "bias": -3.76,
+   "within7h": 0.419,
+   "kpHit": 0.209,
+   "kpN": 86
+  }
+ ]
+}

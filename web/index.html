@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Aurora Nowcast</title>
+<meta name="description" content="Northern lights forecast for one place: the next two hours from measured solar wind, and the next three nights from CME and Kp forecasts.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%230f2a3a'/%3E%3Cpath d='M6 20 C 10 8, 14 24, 18 12 S 24 18, 27 9' stroke='%2358d6a2' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="styles.css">
+<script src="config.js"></script>
+<script src="vendor/d3.v7.min.js"></script>
+<script src="vendor/topojson-client.min.js"></script>
+</head>
+<body>
+<header class="masthead">
+  <div class="masthead-row">
+    <div class="brand">
+      <h1>Aurora Nowcast</h1>
+      <p class="tagline">Two hours from the solar wind already measured, three nights from the Sun.</p>
+    </div>
+    <form class="location" id="location-form" autocomplete="off">
+      <label for="place">Place</label>
+      <select id="place">
+        <option value="55.676,12.568">Copenhagen</option>
+        <option value="56.157,10.211">Aarhus</option>
+        <option value="57.725,10.586">Skagen</option>
+        <option value="59.913,10.752">Oslo</option>
+        <option value="59.329,18.069">Stockholm</option>
+        <option value="64.147,-21.940">Reykjavik</option>
+        <option value="67.856,20.225">Kiruna</option>
+        <option value="69.649,18.956">Tromsø</option>
+        <option value="custom">Custom…</option>
+      </select>
+      <label for="lat">Lat</label><input id="lat" type="number" step="0.001" min="-90" max="90" value="55.676">
+      <label for="lon">Lon</label><input id="lon" type="number" step="0.001" min="-180" max="180" value="12.568">
+      <button type="submit" id="apply-location">Apply</button>
+      <button type="button" id="geolocate" title="Use the browser's location">Locate me</button>
+      <button type="button" id="theme-toggle" class="ghost" title="Toggle light and dark">Theme</button>
+    </form>
+  </div>
+  <div class="verdict" id="verdict" aria-live="polite">
+    <div class="verdict-main">
+      <span class="verdict-badge" id="verdict-badge">…</span>
+      <span class="verdict-text" id="verdict-headline">Loading solar wind data</span>
+    </div>
+    <p class="verdict-detail" id="verdict-detail"></p>
+    <dl class="site-facts" id="site-facts"></dl>
+  </div>
+  <ul class="freshness" id="freshness" aria-label="Data freshness"></ul>
+</header>
+
+<main class="grid">
+  <section class="panel short" aria-labelledby="short-title">
+    <div class="panel-head">
+      <h2 id="short-title">Next two hours</h2>
+      <p class="panel-sub" id="short-sub">Solar wind measured 1.5 million km upstream arrives here in 30 to 90 minutes. Beyond that the forecast widens.</p>
+    </div>
+    <div class="tiles" id="tiles" role="list"></div>
+    <figure class="chart" id="timeline">
+      <figcaption>Solar wind driving and activity, last 6 hours and next 2 hours</figcaption>
+      <div class="chart-body" id="timeline-chart"></div>
+      <div class="legend" id="timeline-legend"></div>
+    </figure>
+    <figure class="chart" id="boundary">
+      <figcaption>Where the oval's equatorward edge sits relative to you</figcaption>
+      <div class="chart-body" id="boundary-chart"></div>
+    </figure>
+    <div class="two-up">
+      <figure class="chart" id="substorm">
+        <figcaption>Substorm activity at the Finnish IMAGE magnetometers</figcaption>
+        <div class="chart-body" id="substorm-chart"></div>
+        <p class="note" id="substorm-note"></p>
+      </figure>
+      <figure class="chart" id="map">
+        <figcaption>NOAA OVATION aurora forecast, northern hemisphere</figcaption>
+        <div class="chart-body" id="map-chart"></div>
+        <p class="note" id="map-note"></p>
+      </figure>
+    </div>
+    <details class="table-view">
+      <summary>Table view of the two-hour forecast</summary>
+      <div class="table-scroll"><table id="horizon-table"></table></div>
+    </details>
+  </section>
+
+  <section class="panel long" aria-labelledby="long-title">
+    <div class="panel-head">
+      <h2 id="long-title">Next three nights</h2>
+      <p class="panel-sub">Kp forecasts from NOAA and GFZ, CME arrivals from NASA's DONKI runs, stream timing from WSA-Enlil.</p>
+    </div>
+    <div class="nights" id="nights" role="list"></div>
+    <figure class="chart" id="kp-forecast">
+      <figcaption>Forecast Kp, 3-hour bins, with your visibility thresholds</figcaption>
+      <div class="chart-body" id="kp-chart"></div>
+      <div class="legend" id="kp-legend"></div>
+    </figure>
+    <div class="cmes" id="cmes"></div>
+    <figure class="chart" id="enlil">
+      <figcaption>WSA-Enlil predicted solar wind speed at Earth</figcaption>
+      <div class="chart-body" id="enlil-chart"></div>
+      <p class="note" id="enlil-note"></p>
+    </figure>
+    <div class="agreement" id="agreement"></div>
+    <div class="alerts" id="alerts"></div>
+    <div class="discussion" id="discussion"></div>
+  </section>
+</main>
+
+<footer class="footer">
+  <details>
+    <summary>How this works and where the data comes from</summary>
+    <div class="method" id="method"></div>
+  </details>
+  <p class="credits">Data: NOAA SWPC (solar wind, OVATION Prime, Kp, WSA-Enlil, alerts) · NASA CCMC DONKI (CME arrivals) · GFZ Potsdam Hp30 and Kp forecasts, CC BY 4.0 · Finnish Meteorological Institute IMAGE magnetometers, CC BY 4.0 · INTERMAGNET (CC BY-NC 4.0) · UK Met Office · SIDC/ROB · Natural Earth. Personal, non-commercial use. <a href="verify.html">Model check</a> · <a href="https://github.com/codingbiro/aurora">Source</a></p>
+</footer>
+<script type="module" src="src/app.mjs"></script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "aurora-proxy",
+  "main": "worker/src/index.mjs",
+  "compatibility_date": "2026-09-01",
+  "observability": { "enabled": true },
+  "vars": {
+    // Origins allowed to call the proxy. "*" is fine for personal use; upstreams are allow-listed anyway.
+    "ALLOWED_ORIGINS": "*",
+    "DASHBOARD_URL": "https://codingbiro.github.io/aurora/",
+    "OBSERVER_LAT": "55.676",
+    "OBSERVER_LON": "12.568",
+    // Set to an ntfy.sh topic name to receive push notifications from the cron job; empty disables it.
+    "NTFY_TOPIC": ""
+  },
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "kv_namespaces": [{ "binding": "SNAP", "id": "dd50dac8c0f04bab948b911440aba450" }]
+}

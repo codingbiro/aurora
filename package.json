@@ -1,0 +1,37 @@
+{
+  "name": "aurora",
+  "version": "1.0.0",
+  "description": "Northern lights forecast dashboard: 10 to 120 minute nowcast and 1 to 3 day outlook",
+  "main": "index.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "test": "node --test",
+    "dev": "node scripts/dev-server.mjs",
+    "calibrate": "node calibration/run.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "worker:dev": "wrangler dev --test-scheduled",
+    "worker:deploy": "wrangler deploy",
+    "worker:kv": "wrangler kv namespace create SNAP"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/codingbiro/aurora.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/codingbiro/aurora/issues"
+  },
+  "homepage": "https://github.com/codingbiro/aurora#readme",
+  "type": "module",
+  "private": "true",
+  "devDependencies": {
+    "d3": "^7.9.0",
+    "topojson-client": "^3.1.0",
+    "world-atlas": "^2.0.2",
+    "wrangler": "^4.134.0"
+  }
+}
