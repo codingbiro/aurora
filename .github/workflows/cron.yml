@@ -1,0 +1,16 @@
+name: Nowcast cron (fallback scheduler)
+# Calls the Worker's scheduled job through its token-protected endpoint. Cloudflare's own Cron Trigger
+# runs the same job every 5 minutes; this is a belt-and-braces fallback (GitHub schedules can lag).
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger the nowcast job
+        env:
+          CRON_TOKEN: ${{ secrets.CRON_TOKEN }}
+        run: |
+          curl -sS --fail --max-time 60 -H "Authorization: Bearer $CRON_TOKEN" https://aurora.birovince.com/api/cron | head -c 600; echo

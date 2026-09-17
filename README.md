@@ -30,6 +30,8 @@ npm run worker:deploy    # uploads assets + Worker, (re)creates the custom domai
 
 `web/config.js` picks the API origin: same origin on localhost, the custom domain and workers.dev; the workers.dev proxy from anywhere else.
 
+The scheduled job can also be run on demand: `GET /api/cron` with `Authorization: Bearer <CRON_TOKEN>` (secret set with `wrangler secret put CRON_TOKEN`); `.github/workflows/cron.yml` calls it every 10 minutes as a fallback scheduler.
+
 Optional: set `NTFY_TOPIC` in `wrangler.jsonc` to an [ntfy.sh](https://ntfy.sh) topic and the cron will push a notification when the modeled oval edge comes within view of the configured observer (`OBSERVER_LAT`/`OBSERVER_LON`).
 
 ## Layout

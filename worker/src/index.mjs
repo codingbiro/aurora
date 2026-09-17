@@ -3,10 +3,23 @@
 // verification trail in KV and (optionally) pushes a notification through ntfy.sh.
 import { handleApi } from './proxy.mjs';
 import { runScheduled } from './scheduled.mjs';
+import { corsHeaders } from './proxy.mjs';
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (url.pathname === '/api/cron') {
+      // Manual trigger for the scheduled job (verification, or an external scheduler as a fallback).
+      const auth = request.headers.get('Authorization') || '';
+      const token = auth.startsWith('Bearer ') ? auth.slice(7) : url.searchParams.get('token');
+      if (!env.CRON_TOKEN || !token || token !== env.CRON_TOKEN) return new Response('not found', { status: 404 });
+      try {
+        const state = await runScheduled(env, Date.now());
+        return new Response(JSON.stringify({ ok: true, state }), { headers: { ...corsHeaders(request, env), 'Content-Type': 'application/json' } });
+      } catch (err) {
+        return new Response(JSON.stringify({ ok: false, error: String(err && err.stack || err) }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+      }
+    }
     if (url.pathname.startsWith('/api/')) return handleApi(request, env);
     // Everything else is a static asset (web/); when assets are not configured, point at the dashboard.
     if (env.ASSETS) return env.ASSETS.fetch(request);
