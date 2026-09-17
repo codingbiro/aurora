@@ -191,7 +191,7 @@ function renderFreshnessStrip() {
     { label: proxy.available ? 'GFZ Hp30' : 'Hp30 (iSWA mirror)', t: last(state.hp30) + 30 * MIN, exp: proxy.available ? 35 : 90 },
     { label: state.stationSource === 'INTERMAGNET' ? 'INTERMAGNET' : 'FMI magnetometers', t: state.stations.length ? Math.max(...state.stations.map(s => s.series.t[s.series.t.length - 1])) : NaN, exp: 10 },
     { label: 'Kp forecast', t: state.meta.kpForecast?.lastModified || state.meta.kpForecast?.fetchedAt, exp: 12 * 60 }, { label: 'DONKI CMEs', t: state.meta.donki?.fetchedAt, exp: 30 },
-    { label: 'WSA-Enlil', t: state.meta.enlil?.lastModified, exp: 12 * 60 }, { label: 'GFZ ensemble', t: state.meta.gfzEnsemble?.lastModified, exp: 4 * 60, hide: !proxy.available },
+    { label: 'WSA-Enlil', t: state.meta.enlil?.lastModified || state.meta.enlil?.fetchedAt, exp: 12 * 60 }, { label: 'GFZ ensemble', t: state.meta.gfzEnsemble?.lastModified || state.meta.gfzEnsemble?.fetchedAt, exp: 4 * 60, hide: !proxy.available },
   ];
   renderFreshness(items.filter(i => !i.hide).map(i => { const f = freshness(i.t, i.exp, now); return { label: i.label, ageMin: f.age, level: f.level, title: Number.isFinite(i.t) ? new Date(i.t).toISOString() : 'no data' }; }));
 }

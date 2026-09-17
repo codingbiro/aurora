@@ -59,7 +59,8 @@ export function corsHeaders(request, env) {
   const origin = request.headers.get('Origin') || '';
   const allowed = (env && env.ALLOWED_ORIGINS ? String(env.ALLOWED_ORIGINS) : '*').split(',').map(s => s.trim()).filter(Boolean);
   const allow = allowed.includes('*') ? '*' : (allowed.includes(origin) ? origin : allowed[0] || '');
-  return { 'Access-Control-Allow-Origin': allow, 'Access-Control-Allow-Methods': 'GET, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type', 'Vary': 'Origin' };
+  return { 'Access-Control-Allow-Origin': allow, 'Access-Control-Allow-Methods': 'GET, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Expose-Headers': 'X-Upstream-Last-Modified, X-Proxy-Cache, X-Proxy-Fetched-At, X-Attribution', 'Vary': 'Origin' };
 }
 
 /** Handle an /api request and return a Response. `env` may carry ALLOWED_ORIGINS. */
