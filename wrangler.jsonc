@@ -2,12 +2,16 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "aurora-proxy",
   "main": "worker/src/index.mjs",
+  // The dashboard itself is served as static assets from web/; /api/* and the cron run in the Worker.
+  "assets": { "directory": "./web", "binding": "ASSETS", "run_worker_first": ["/api/*"] },
+  "workers_dev": true,
+  "routes": [{ "pattern": "aurora.birovince.com", "custom_domain": true }],
   "compatibility_date": "2026-09-01",
   "observability": { "enabled": true },
   "vars": {
     // Origins allowed to call the proxy. "*" is fine for personal use; upstreams are allow-listed anyway.
     "ALLOWED_ORIGINS": "*",
-    "DASHBOARD_URL": "https://codingbiro.github.io/aurora/",
+    "DASHBOARD_URL": "https://aurora.birovince.com/",
     "OBSERVER_LAT": "55.676",
     "OBSERVER_LON": "12.568",
     // Set to an ntfy.sh topic name to receive push notifications from the cron job; empty disables it.

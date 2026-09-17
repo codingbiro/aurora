@@ -83,6 +83,8 @@ export async function handleApi(request, env = {}) {
     const now = Date.now();
     const hit = memoryCache.get(upstream);
     if (hit && hit.expires > now) return respond(hit, route, cors, 'HIT', now);
+    const edge = await edgeCacheGet(upstream, route, now);
+    if (edge) { memoryCache.set(upstream, edge); return respond(edge, route, cors, 'EDGE', now); }
     try {
       const res = await fetch(upstream, { headers: { 'User-Agent': 'aurora-dashboard/1.0 (+https://github.com/codingbiro/aurora)', 'Accept': '*/*' }, redirect: 'follow' });
       if (!res.ok) {
@@ -93,6 +95,7 @@ export async function handleApi(request, env = {}) {
       const entry = { expires: now + route.ttl * 1000, status: 200, type: route.type, body, lastModified: res.headers.get('last-modified') || '', fetchedAt: now };
       memoryCache.set(upstream, entry);
       pruneCache();
+      await edgeCachePut(upstream, entry, route);
       return respond(entry, route, cors, 'MISS', now);
     } catch (err) {
       if (hit) return respond(hit, route, cors, 'STALE', now);
@@ -124,4 +127,25 @@ function pruneCache() {
   const now = Date.now();
   for (const [k, v] of memoryCache) if (v.expires <= now) memoryCache.delete(k);
   while (memoryCache.size > 64) memoryCache.delete(memoryCache.keys().next().value);
+}
+
+// Edge cache (Cloudflare Cache API): shared across isolates on a custom domain; silently unavailable elsewhere.
+const cacheKey = (upstream) => new Request('https://aurora-proxy-cache.invalid/' + encodeURIComponent(upstream));
+async function edgeCacheGet(upstream, route, now) {
+  try {
+    if (typeof caches === 'undefined' || !caches.default) return null;
+    const res = await caches.default.match(cacheKey(upstream));
+    if (!res) return null;
+    const fetchedAt = +res.headers.get('X-Proxy-Fetched-At-Ms') || now;
+    if (fetchedAt + route.ttl * 1000 <= now) return null;
+    return { expires: fetchedAt + route.ttl * 1000, status: 200, type: route.type, body: await res.arrayBuffer(), lastModified: res.headers.get('X-Upstream-Last-Modified') || '', fetchedAt };
+  } catch { return null; }
+}
+async function edgeCachePut(upstream, entry, route) {
+  try {
+    if (typeof caches === 'undefined' || !caches.default) return;
+    const headers = { 'Content-Type': entry.type, 'Cache-Control': `public, s-maxage=${route.ttl}`, 'X-Proxy-Fetched-At-Ms': String(entry.fetchedAt) };
+    if (entry.lastModified) headers['X-Upstream-Last-Modified'] = entry.lastModified;
+    await caches.default.put(cacheKey(upstream), new Response(entry.body.slice(0), { headers }));
+  } catch { /* cache unavailable */ }
 }

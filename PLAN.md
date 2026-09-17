@@ -180,7 +180,7 @@ Everything below was read from source code, downloaded papers or live data on 20
 
 ## 9. Decisions (resolved 2026-09-17)
 
-1. **Hosting**: local-first with Node.js (`npm run dev`), page on GitHub Pages, proxy and cron on a Cloudflare Worker (free plan).
+1. **Hosting**: local-first with Node.js (`npm run dev`); production on one Cloudflare Worker (free plan) at https://aurora.birovince.com serving the static page, the `/api` proxy and the cron; GitHub Pages kept as a mirror.
 2. **Default location**: Copenhagen, with geolocation and manual entry.
 3. **Use**: personal. INTERMAGNET (CC BY-NC 4.0) stays as the browser-only fallback; for a public or commercial deployment it must be removed or licensed.
 4. **Scope**: full (M1 to M4) in `codingbiro/aurora`.

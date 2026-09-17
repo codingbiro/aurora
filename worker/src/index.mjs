@@ -8,10 +8,9 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname.startsWith('/api/')) return handleApi(request, env);
-    if (url.pathname === '/') {
-      return new Response(`aurora proxy. Health: /api/health. Dashboard: ${env.DASHBOARD_URL || 'https://codingbiro.github.io/aurora/'}`, { headers: { 'Content-Type': 'text/plain' } });
-    }
-    return new Response('not found', { status: 404 });
+    // Everything else is a static asset (web/); when assets are not configured, point at the dashboard.
+    if (env.ASSETS) return env.ASSETS.fetch(request);
+    return new Response(`aurora proxy. Health: /api/health. Dashboard: ${env.DASHBOARD_URL || 'https://aurora.birovince.com/'}`, { headers: { 'Content-Type': 'text/plain' } });
   },
   async scheduled(controller, env, ctx) {
     ctx.waitUntil(runScheduled(env, controller.scheduledTime));

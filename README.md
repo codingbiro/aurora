@@ -21,14 +21,14 @@ The dev server serves `web/` and answers `/api/*` with the same allow-listed pro
 
 ## Deploy
 
-The page is static (GitHub Pages); the Worker only proxies the handful of feeds that send no CORS headers (GFZ, FMI, IRF, Met Office, SIDC) and runs a 5-minute cron.
+Production is **https://aurora.birovince.com**: one Cloudflare Worker (`aurora-proxy`, free plan) serves `web/` as static assets, answers `/api/*` for the feeds that send no CORS headers (GFZ, FMI, IRF, Met Office, SIDC) with edge caching, and runs a 5-minute cron. The custom domain is declared in `wrangler.jsonc` (`routes` with `custom_domain: true`), so `wrangler deploy` creates the DNS record and certificate itself. The same build is also reachable at `aurora-proxy.birovince.workers.dev`, and GitHub Pages (`https://codingbiro.github.io/aurora/`, deployed by `.github/workflows/pages.yml`) keeps working as a mirror that calls the workers.dev proxy.
 
 ```bash
 npm run worker:kv        # once: creates the SNAP KV namespace; paste the id into wrangler.jsonc
-npm run worker:deploy    # deploys aurora-proxy to your Cloudflare account (free plan is enough)
+npm run worker:deploy    # uploads assets + Worker, (re)creates the custom domain and cron trigger
 ```
 
-Then set `apiBase` in `web/config.js` to the Worker URL. GitHub Pages deploys from `.github/workflows/pages.yml` on every push to `main`.
+`web/config.js` picks the API origin: same origin on localhost, the custom domain and workers.dev; the workers.dev proxy from anywhere else.
 
 Optional: set `NTFY_TOPIC` in `wrangler.jsonc` to an [ntfy.sh](https://ntfy.sh) topic and the cron will push a notification when the modeled oval edge comes within view of the configured observer (`OBSERVER_LAT`/`OBSERVER_LON`).
 
