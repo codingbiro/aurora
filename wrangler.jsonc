@@ -16,7 +16,8 @@
     // or "overhead"; minKpLead: only alert when the Kp expected in the next hour is at least this.
     // topic: optional ntfy topic per place; otherwise the NTFY_TOPIC secret is used for all.
     "OBSERVERS": [
-      { "name": "Copenhagen", "lat": 55.676, "lon": 12.568, "alertOn": "horizon", "minKpLead": 0 }
+      { "name": "Copenhagen", "lat": 55.676, "lon": 12.568, "alertOn": "horizon", "minKpLead": 0 },
+      { "name": "Tromsø", "lat": 69.649, "lon": 18.956, "alertOn": "overhead", "minKpLead": 2 }
     ],
     // Default ntfy.sh topic. Set as a secret (`wrangler secret put NTFY_TOPIC`) to keep it out of git; empty disables alerts.
     "NTFY_TOPIC": ""
