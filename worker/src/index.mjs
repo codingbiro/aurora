@@ -13,6 +13,16 @@ export default {
       const auth = request.headers.get('Authorization') || '';
       const token = auth.startsWith('Bearer ') ? auth.slice(7) : url.searchParams.get('token');
       if (!env.CRON_TOKEN || !token || token !== env.CRON_TOKEN) return new Response('not found', { status: 404 });
+      if (url.searchParams.get('telegram') === 'updates') {
+        // Helper for setup: list the chats that have messaged the bot, so TELEGRAM_CHAT_ID can be set without exposing the token.
+        if (!env.TELEGRAM_BOT_TOKEN) return new Response(JSON.stringify({ ok: false, error: 'TELEGRAM_BOT_TOKEN secret not set' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+        const r = await fetch(`https://api.telegram.org/bot${String(env.TELEGRAM_BOT_TOKEN).trim()}/getUpdates`);
+        const j = await r.json().catch(() => null);
+        const chats = [];
+        for (const u of (j && j.result) || []) { const m = u.message || u.channel_post || u.my_chat_member?.chat && { chat: u.my_chat_member.chat }; if (m && m.chat) chats.push({ id: m.chat.id, type: m.chat.type, name: m.chat.title || [m.chat.first_name, m.chat.last_name].filter(Boolean).join(' '), username: m.chat.username, text: (m.text || '').slice(0, 40) }); }
+        const uniq = [...new Map(chats.map(c => [c.id, c])).values()];
+        return new Response(JSON.stringify({ ok: r.ok && !!j?.ok, status: r.status, botOk: j?.ok, chats: uniq, hint: uniq.length ? 'set TELEGRAM_CHAT_ID to the id you want' : 'send any message to the bot first, then call again' }), { headers: { 'Content-Type': 'application/json' } });
+      }
       if (url.searchParams.get('test') === '1') {
         // Send a test notification to every observer's topic through the same code path as real alerts.
         const results = [];
