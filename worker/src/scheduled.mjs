@@ -79,12 +79,11 @@ export async function runScheduled(env, scheduledTime = Date.now()) {
       const lastKey = `notify:last:${o.name}`;
       const last = await env.SNAP.get(lastKey);
       if (!last || now - Date.parse(last) > 2 * 3600e3) {
-        await fetch(`https://ntfy.sh/${o.topic}`, {
-          method: 'POST', headers: { Title: `Aurora alert: ${o.name}`, Priority: 'high', Tags: 'milky_way' },
-          body: `Modeled oval edge ${state.margin} deg from ${o.name} (${state.visible}). Kp now ${state.kpNow}, in about ${round((tLast - now) / 60e3, 0)} min ${state.kpLead}. ${env.DASHBOARD_URL || ''}`,
-        });
-        await env.SNAP.put(lastKey, new Date(now).toISOString());
-        state.alerted = true;
+        const result = await sendNtfy(o.topic, `Aurora alert: ${o.name}`,
+          `Modeled oval edge ${state.margin} deg from ${o.name} (${state.visible}). Kp now ${state.kpNow}, in about ${round((tLast - now) / 60e3, 0)} min ${state.kpLead}. ${env.DASHBOARD_URL || ''}`, env);
+        state.alertResult = result;
+        if (result.ok) { await env.SNAP.put(lastKey, new Date(now).toISOString()); state.alerted = true; }
+        else await env.SNAP.put('notify:lasterror', JSON.stringify({ time: new Date(now).toISOString(), place: o.name, ...result }));
       }
     }
   }
@@ -101,3 +100,31 @@ export async function runScheduled(env, scheduledTime = Date.now()) {
 }
 
 const round = (x, d) => (Number.isFinite(x) ? +x.toFixed(d) : null);
+
+/** RFC 2047 encoding for header values that are not plain ASCII (ntfy accepts it). */
+export function headerValue(str) {
+  return /^[\x20-\x7e]*$/.test(str) ? str : `=?UTF-8?B?${btoa(String.fromCharCode(...new TextEncoder().encode(str)))}?=`;
+}
+
+/**
+ * Post a notification to ntfy.sh (or env.NTFY_SERVER) and report the outcome. Never throws.
+ * env.NTFY_TOKEN (optional) authenticates against an ntfy account for higher rate limits.
+ */
+export async function sendNtfy(topic, title, body, env = {}, { priority = 'high', tags = 'milky_way' } = {}) {
+  const server = (env.NTFY_SERVER || 'https://ntfy.sh').replace(/\/$/, '');
+  const headers = { Title: headerValue(title), Priority: priority, Tags: tags, 'Content-Type': 'text/plain; charset=utf-8' };
+  if (env.NTFY_TOKEN) headers.Authorization = `Bearer ${env.NTFY_TOKEN}`;
+  let last = { ok: false, status: 0, text: 'not attempted', server };
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(`${server}/${encodeURIComponent(topic)}`, { method: 'POST', headers, body });
+      const text = (await res.text()).slice(0, 300);
+      last = { ok: res.ok, status: res.status, text, server, attempts: attempt + 1 };
+      if (res.ok || res.status === 429 || res.status === 401 || res.status === 403) break; // quota/auth errors do not improve on retry
+    } catch (err) {
+      last = { ok: false, status: 0, text: String((err && err.message) || err), server, attempts: attempt + 1 };
+    }
+    await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
+  }
+  return last;
+}

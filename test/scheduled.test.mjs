@@ -23,3 +23,11 @@ test('shouldAlert respects topic, visibility class and minimum Kp', () => {
   assert.equal(shouldAlert(tro, { visible: 'overhead', kpLead: 1.5 }), false);
   assert.equal(shouldAlert(tro, { visible: 'overhead', kpLead: 2.5 }), true);
 });
+
+import { headerValue } from '../worker/src/scheduled.mjs';
+test('headerValue keeps ASCII and RFC 2047-encodes anything else', () => {
+  assert.equal(headerValue('Aurora alert: Copenhagen'), 'Aurora alert: Copenhagen');
+  const enc = headerValue('Aurora alert: Tromsø');
+  assert.match(enc, /^=\?UTF-8\?B\?[A-Za-z0-9+/=]+\?=$/);
+  assert.equal(Buffer.from(enc.slice(10, -2), 'base64').toString('utf8'), 'Aurora alert: Tromsø');
+});
