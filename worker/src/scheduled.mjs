@@ -32,8 +32,8 @@ export function resolveObservers(env) {
 }
 
 /** Whether a computed state should trigger an alert for this observer. */
-export function shouldAlert(observer, state) {
-  if (!observer.topic) return false;
+export function shouldAlert(observer, state, env = {}) {
+  if (!observer.topic && !hasTelegram(env) && !hasWebhook(env)) return false;
   if (state.visible === 'none') return false;
   if (observer.alertOn === 'overhead' && state.visible !== 'overhead') return false;
   return (state.kpLead ?? 0) >= observer.minKpLead;
@@ -70,16 +70,16 @@ export async function runScheduled(env, scheduledTime = Date.now()) {
       name: o.name, lat: o.lat, lon: o.lon, mlat: round(obs.mlat, 2), mltLead: round(mltLead, 2),
       kpNow: round(kpNow, 2), kpLead: round(kpLead, 2), boundary: round(boundary, 1), margin: round(margin, 1),
       visible: margin <= VIEW_ALLOWANCE_DEG ? (margin <= 0 ? 'overhead' : 'horizon') : 'none',
-      alertOn: o.alertOn, minKpLead: o.minKpLead, alerts: !!o.topic,
+      alertOn: o.alertOn, minKpLead: o.minKpLead, alerts: !!(o.topic || hasTelegram(env) || hasWebhook(env)), channels: channelNames(o, env),
     };
     states.push(state);
     trailRows.push([new Date(now).toISOString(), o.name, state.kpNow, state.kpLead, state.margin]);
 
-    if (shouldAlert(o, state)) {
+    if (shouldAlert(o, state, env)) {
       const lastKey = `notify:last:${o.name}`;
       const last = await env.SNAP.get(lastKey);
       if (!last || now - Date.parse(last) > 2 * 3600e3) {
-        const result = await sendNtfy(o.topic, `Aurora alert: ${o.name}`,
+        const result = await sendAlert(o, `Aurora alert: ${o.name}`,
           `Modeled oval edge ${state.margin} deg from ${o.name} (${state.visible}). Kp now ${state.kpNow}, in about ${round((tLast - now) / 60e3, 0)} min ${state.kpLead}. ${env.DASHBOARD_URL || ''}`, env);
         state.alertResult = result;
         if (result.ok) { await env.SNAP.put(lastKey, new Date(now).toISOString()); state.alerted = true; }
@@ -113,7 +113,7 @@ export function headerValue(str) {
 export async function sendNtfy(topic, title, body, env = {}, { priority = 'high', tags = 'milky_way' } = {}) {
   const server = (env.NTFY_SERVER || 'https://ntfy.sh').replace(/\/$/, '');
   const headers = { Title: headerValue(title), Priority: priority, Tags: tags, 'Content-Type': 'text/plain; charset=utf-8' };
-  if (env.NTFY_TOKEN) headers.Authorization = `Bearer ${env.NTFY_TOKEN}`;
+  if (env.NTFY_TOKEN) headers.Authorization = `Bearer ${String(env.NTFY_TOKEN).trim()}`;
   let last = { ok: false, status: 0, text: 'not attempted', server };
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
@@ -127,4 +127,41 @@ export async function sendNtfy(topic, title, body, env = {}, { priority = 'high'
     await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
   }
   return last;
+}
+
+export const hasTelegram = (env) => !!(env.TELEGRAM_BOT_TOKEN && env.TELEGRAM_CHAT_ID);
+export const hasWebhook = (env) => !!env.ALERT_WEBHOOK_URL;
+export function channelNames(observer, env) {
+  const c = []; if (observer.topic) c.push('ntfy'); if (hasTelegram(env)) c.push('telegram'); if (hasWebhook(env)) c.push('webhook'); return c;
+}
+
+/** Telegram Bot API sendMessage. Never throws. */
+export async function sendTelegram(env, text) {
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${String(env.TELEGRAM_BOT_TOKEN).trim()}/sendMessage`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: String(env.TELEGRAM_CHAT_ID).trim(), text, disable_web_page_preview: true }),
+    });
+    return { channel: 'telegram', ok: res.ok, status: res.status, text: (await res.text()).slice(0, 200) };
+  } catch (err) { return { channel: 'telegram', ok: false, status: 0, text: String((err && err.message) || err) }; }
+}
+
+/** Generic JSON webhook: Slack incoming webhooks read `text`, Discord webhooks read `content`. Never throws. */
+export async function sendWebhook(env, title, body) {
+  try {
+    const res = await fetch(String(env.ALERT_WEBHOOK_URL).trim(), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: `${title}\n${body}`, content: `**${title}**\n${body}` }),
+    });
+    return { channel: 'webhook', ok: res.ok, status: res.status, text: (await res.text()).slice(0, 200) };
+  } catch (err) { return { channel: 'webhook', ok: false, status: 0, text: String((err && err.message) || err) }; }
+}
+
+/** Fan out one alert to every configured channel; ok when at least one delivered. */
+export async function sendAlert(observer, title, body, env) {
+  const results = [];
+  if (observer.topic) results.push({ channel: 'ntfy', ...(await sendNtfy(observer.topic, title, body, env)) });
+  if (hasTelegram(env)) results.push(await sendTelegram(env, `${title}\n${body}`));
+  if (hasWebhook(env)) results.push(await sendWebhook(env, title, body));
+  return { ok: results.some(r => r.ok), results };
 }

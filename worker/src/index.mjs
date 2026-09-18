@@ -2,7 +2,7 @@
 // rolling driving history, evaluates a light nowcast for the configured observer, stores a
 // verification trail in KV and (optionally) pushes a notification through ntfy.sh.
 import { handleApi } from './proxy.mjs';
-import { runScheduled, resolveObservers, sendNtfy } from './scheduled.mjs';
+import { runScheduled, resolveObservers, sendAlert, channelNames } from './scheduled.mjs';
 import { corsHeaders } from './proxy.mjs';
 
 export default {
@@ -16,9 +16,21 @@ export default {
       if (url.searchParams.get('test') === '1') {
         // Send a test notification to every observer's topic through the same code path as real alerts.
         const results = [];
-        for (const o of resolveObservers(env)) results.push({ place: o.name, topic: o.topic ? o.topic.slice(0, 4) + '…' : '', ...(o.topic ? await sendNtfy(o.topic, `Aurora alert test: ${o.name}`, `Test from the Worker at ${new Date().toISOString()}. ${env.DASHBOARD_URL || ''}`, env) : { ok: false, status: 0, text: 'no topic' }) });
+        for (const o of resolveObservers(env)) results.push({ place: o.name, channels: channelNames(o, env), ...(await sendAlert(o, `Aurora alert test: ${o.name}`, `Test from the Worker at ${new Date().toISOString()}. ${env.DASHBOARD_URL || ''}`, env)) });
         const lastError = env.SNAP ? await env.SNAP.get('notify:lasterror') : null;
-        return new Response(JSON.stringify({ ok: true, results, lastError: lastError ? JSON.parse(lastError) : null }), { headers: { 'Content-Type': 'application/json' } });
+        // Diagnostics: does the token reach ntfy, and what does that account have left? (token itself never returned)
+        const tok = env.NTFY_TOKEN || '';
+        const tokenInfo = { present: !!tok, length: tok.length, prefixOk: tok.startsWith('tk_'), hasWhitespace: /\s/.test(tok) };
+        let account = null;
+        if (tok) {
+          try {
+            const server = (env.NTFY_SERVER || 'https://ntfy.sh').replace(/\/$/, '');
+            const r = await fetch(`${server}/v1/account`, { headers: { Authorization: `Bearer ${tok.trim()}` } });
+            const j = await r.json().catch(() => null);
+            account = { status: r.status, username: j?.username, role: j?.role, tier: j?.tier?.name || j?.tier, limits: j?.limits, stats: j?.stats };
+          } catch (err) { account = { error: String(err && err.message || err) }; }
+        }
+        return new Response(JSON.stringify({ ok: true, results, tokenInfo, account, lastError: lastError ? JSON.parse(lastError) : null }), { headers: { 'Content-Type': 'application/json' } });
       }
       try {
         const state = await runScheduled(env, Date.now());

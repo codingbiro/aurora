@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveObservers, shouldAlert } from '../worker/src/scheduled.mjs';
+import { resolveObservers, shouldAlert, channelNames } from '../worker/src/scheduled.mjs';
 
 test('resolveObservers falls back to the single lat/lon pair', () => {
   const o = resolveObservers({ OBSERVER_LAT: '55.676', OBSERVER_LON: '12.568', NTFY_TOPIC: 't1' });
@@ -19,6 +19,8 @@ test('shouldAlert respects topic, visibility class and minimum Kp', () => {
   assert.equal(shouldAlert(cph, { visible: 'horizon', kpLead: 4 }), true);
   assert.equal(shouldAlert(cph, { visible: 'none', kpLead: 4 }), false);
   assert.equal(shouldAlert({ ...cph, topic: '' }, { visible: 'overhead', kpLead: 4 }), false);
+  assert.equal(shouldAlert({ ...cph, topic: '' }, { visible: 'overhead', kpLead: 4 }, { TELEGRAM_BOT_TOKEN: 'x', TELEGRAM_CHAT_ID: '1' }), true, 'telegram counts as a channel');
+  assert.deepEqual(channelNames({ topic: 't' }, { ALERT_WEBHOOK_URL: 'https://x' }), ['ntfy', 'webhook']);
   assert.equal(shouldAlert(tro, { visible: 'horizon', kpLead: 4 }), false);
   assert.equal(shouldAlert(tro, { visible: 'overhead', kpLead: 1.5 }), false);
   assert.equal(shouldAlert(tro, { visible: 'overhead', kpLead: 2.5 }), true);
