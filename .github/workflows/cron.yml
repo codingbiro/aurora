@@ -1,9 +1,9 @@
 name: Nowcast cron (fallback scheduler)
 # Calls the Worker's scheduled job through its token-protected endpoint. Cloudflare's own Cron Trigger
-# runs the same job every 5 minutes; this fallback runs the job every 5 minutes as well (GitHub schedules can lag).
+# runs the same job every 5 minutes; this fallback runs the job every 30 minutes as a safety net (GitHub schedules can lag).
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '*/30 * * * *'
   workflow_dispatch:
 jobs:
   run:
