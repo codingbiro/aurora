@@ -13,6 +13,20 @@ export default {
       const auth = request.headers.get('Authorization') || '';
       const token = auth.startsWith('Bearer ') ? auth.slice(7) : url.searchParams.get('token');
       if (!env.CRON_TOKEN || !token || token !== env.CRON_TOKEN) return new Response('not found', { status: 404 });
+      if (url.searchParams.get('proxydebug') === '1') {
+        // Step-by-step check of the proxy tunnel from inside the Worker.
+        const { fetchViaHttpProxy, debugConnect } = await import('./proxyfetch.mjs');
+        const out = { hasProxy: !!env.NTFY_PROXY };
+        if (env.NTFY_PROXY) {
+          const px = String(env.NTFY_PROXY).trim();
+          out.connectHead = await debugConnect(px, 'ntfy.sh', 443).catch(e => 'ERR ' + e.message);
+          for (const [label, target] of [['ntfy_https', 'https://ntfy.sh/v1/health'], ['aws_https', 'https://checkip.amazonaws.com/'], ['ntfy_http', 'http://ntfy.sh/v1/health']]) {
+            try { const r = await fetchViaHttpProxy(px, target, { method: 'GET' }); out[label] = { status: r.status, text: r.text.slice(0, 80) }; }
+            catch (e) { out[label] = 'ERR ' + (e && e.message || e); }
+          }
+        }
+        return new Response(JSON.stringify(out, null, 1), { headers: { 'Content-Type': 'application/json' } });
+      }
       if (url.searchParams.get('telegram') === 'updates') {
         // Helper for setup: list the chats that have messaged the bot, so TELEGRAM_CHAT_ID can be set without exposing the token.
         if (!env.TELEGRAM_BOT_TOKEN) return new Response(JSON.stringify({ ok: false, error: 'TELEGRAM_BOT_TOKEN secret not set' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
@@ -35,9 +49,10 @@ export default {
         if (tok) {
           try {
             const server = (env.NTFY_SERVER || 'https://ntfy.sh').replace(/\/$/, '');
+            // account lookup stays direct over HTTPS (the token must not travel over the plain-HTTP proxy leg)
             const r = await fetch(`${server}/v1/account`, { headers: { Authorization: `Bearer ${tok.trim()}` } });
             const j = await r.json().catch(() => null);
-            account = { status: r.status, username: j?.username, role: j?.role, tier: j?.tier?.name || j?.tier, limits: j?.limits, stats: j?.stats };
+            account = { status: r.status, via: 'direct', username: j?.username, role: j?.role, tier: j?.tier?.name || j?.tier, limits: j?.limits, stats: j?.stats };
           } catch (err) { account = { error: String(err && err.message || err) }; }
         }
         return new Response(JSON.stringify({ ok: true, results, tokenInfo, account, lastError: lastError ? JSON.parse(lastError) : null }), { headers: { 'Content-Type': 'application/json' } });

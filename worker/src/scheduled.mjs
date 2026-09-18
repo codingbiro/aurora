@@ -115,14 +115,27 @@ export async function sendNtfy(topic, title, body, env = {}, { priority = 'high'
   const headers = { Title: headerValue(title), Priority: priority, Tags: tags, 'Content-Type': 'text/plain; charset=utf-8' };
   if (env.NTFY_TOKEN) headers.Authorization = `Bearer ${String(env.NTFY_TOKEN).trim()}`;
   let last = { ok: false, status: 0, text: 'not attempted', server };
+  const via = env.NTFY_PROXY ? 'proxy' : 'direct';
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const res = await fetch(`${server}/${encodeURIComponent(topic)}`, { method: 'POST', headers, body });
-      const text = (await res.text()).slice(0, 300);
-      last = { ok: res.ok, status: res.status, text, server, attempts: attempt + 1 };
+      let res;
+      if (env.NTFY_PROXY) {
+        // Through the user's HTTP forward proxy over a TCP socket, so ntfy meters the proxy's IP instead of Cloudflare's
+        // shared egress. TLS inside the tunnel (startTls) is not usable here, so this leg is plain HTTP; ntfy.sh accepts it.
+        // The account token is deliberately not sent on this unencrypted path: the proxy's own IP quota is what we rely on.
+        const { fetchViaHttpProxy } = await import('./proxyfetch.mjs');
+        const plainServer = server.replace(/^https:/, 'http:');
+        const { Authorization, ...plainHeaders } = headers;
+        res = await fetchViaHttpProxy(String(env.NTFY_PROXY).trim(), `${plainServer}/${encodeURIComponent(topic)}`, { method: 'POST', headers: plainHeaders, body });
+        last = { ok: res.ok, status: res.status, text: res.text.slice(0, 300), server: plainServer, via, attempts: attempt + 1 };
+      } else {
+        res = await fetch(`${server}/${encodeURIComponent(topic)}`, { method: 'POST', headers, body });
+        const text = (await res.text()).slice(0, 300);
+        last = { ok: res.ok, status: res.status, text, server, via, attempts: attempt + 1 };
+      }
       if (res.ok || res.status === 429 || res.status === 401 || res.status === 403) break; // quota/auth errors do not improve on retry
     } catch (err) {
-      last = { ok: false, status: 0, text: String((err && err.message) || err), server, attempts: attempt + 1 };
+      last = { ok: false, status: 0, text: String((err && err.message) || err), server, via, attempts: attempt + 1 };
     }
     await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
   }
