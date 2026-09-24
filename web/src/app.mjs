@@ -5,7 +5,9 @@ import { loadCmes } from './data/donki.mjs';
 import { iswaHp30, iswaClear, ginMinute } from './data/hapi.mjs';
 import { ProxyClient } from './data/proxied.mjs';
 import { MagneticCoordinates } from './model/magcoords.mjs';
-import { parseOvationText, kpForBoundary, VIEW_ALLOWANCE_DEG } from './model/oval.mjs';
+import { parseOvationText, kpForBoundary, VIEW_ALLOWANCE_DEG, TIERS } from './model/oval.mjs';
+import { skyState } from './model/sky.mjs';
+import { loadLocal, localSignal } from './data/local.mjs';
 import { substormState, toMinutes, quietBaseline, substormOutlook, phaseIntervals, onsetMltDensity, ONSET_CLIMATOLOGY } from './model/substorm.mjs';
 import { shortTermForecast } from './model/shortterm.mjs';
 import { weightedRecentAverage } from './model/integrate.mjs';
@@ -13,7 +15,7 @@ import { kpFromDriving } from './model/activity.mjs';
 import { parseGeomagForecast, parseThreeDayForecast, parseDiscussion, parse27Day, parseAlerts, activeGeomagneticMessages, cmeArrivals, enlilEvents, nightCards } from './model/longterm.mjs';
 import { timelineChart, boundaryChart, substormChart, kpForecastChart, enlilChart, electrojetChart, profileChart, onsetClockChart } from './ui/charts.mjs';
 import { polarMap, subsolarPoint } from './ui/map.mjs';
-import { renderVerdict, renderTiles, renderFreshness, renderNights, renderCmes, renderAlerts, renderAgreement, renderDiscussion, renderHorizonTable, renderLegend, renderMethod, renderSubstormPanel } from './ui/panels.mjs';
+import { renderVerdict, renderTiles, renderFreshness, renderNights, renderCmes, renderAlerts, renderAgreement, renderDiscussion, renderHorizonTable, renderLegend, renderMethod, renderSubstormPanel, renderLocalSignals } from './ui/panels.mjs';
 import { fmt } from './ui/format.mjs';
 
 const MIN = 60e3, HOUR = 3600e3;
@@ -41,6 +43,7 @@ const state = {
   propagated: [], ovation: null, ovationGrid: null, kp1m: [], geospaceKp: [], hemi: [], hp30: [], hpo: [], stations: [], rtsw: null,
   kpForecast: [], geomag: null, threeDay: null, discussion: null, outlook: null, alerts: [], scales: null, enlil: null, cmes: [], gfzEnsemble: [], clear: [], metoffice: null, sidc: null, flares: [],
   meta: {}, sub: null, fc: null, substormOutlook: null, tgo: null,
+  geoDst: [], kyotoDst: [], localRaw: {}, local: null, sky: null,
 };
 
 async function loadStatic() {
@@ -57,13 +60,15 @@ function setObserver(lat, lon) {
   state.obs = { lat, lon, ...state.mag.convert(lat, lon) };
   const thr = { horizon: kpForBoundary(state.obs.mlat + VIEW_ALLOWANCE_DEG, 23), overhead: kpForBoundary(state.obs.mlat, 23) };
   state.thresholds = { horizon: Number.isFinite(thr.horizon) ? Math.min(thr.horizon, 9) : 9, overhead: Number.isFinite(thr.overhead) ? Math.min(thr.overhead, 9) : 9 };
+  state.tierThresholds = Object.fromEntries(Object.entries(TIERS).map(([k, allow]) => { const v = kpForBoundary(state.obs.mlat + allow, 23); return [k, Number.isFinite(v) ? Math.min(v, 9) : 9]; }));
   try { localStorage.setItem('aurora.observer', JSON.stringify(state.observer)); } catch {}
 }
 
 // ---------------------------------------------------------------- polling groups
 async function pollFast() {
-  const [p1, kp, geo, hemi, summary] = await Promise.all([load.propagated(URLS.propagated1h), load.kp1m(), load.geospaceKp(), load.hemiPower(), load.rtsw()]);
+  const [p1, kp, geo, hemi, summary, gd] = await Promise.all([load.propagated(URLS.propagated1h), load.kp1m(), load.geospaceKp(), load.hemiPower(), load.rtsw(), load.json(URLS.geospaceDst1h)]);
   state.meta.propagated = p1.meta; if (p1.data.length) state.propagated = mergePropagated(state.propagated, p1.data);
+  if (Array.isArray(gd.data)) state.geoDst = gd.data.map(r => ({ t: Date.parse(r.time_tag + (String(r.time_tag).endsWith('Z') ? '' : 'Z')), dst: +r.dst })).filter(r => Number.isFinite(r.t) && Number.isFinite(r.dst));
   state.meta.kp1m = kp.meta; if (kp.data.length) state.kp1m = kp.data;
   state.meta.geospace = geo.meta; if (geo.data.length) state.geospaceKp = geo.data;
   state.meta.hemi = hemi.meta; if (hemi.data.length) state.hemi = hemi.data;
@@ -90,6 +95,13 @@ async function pollHp30() {
   }
 }
 
+async function pollLocal() {
+  const now = Date.now();
+  const [tor, hel, aw] = await Promise.all([loadLocal.tormestorp(proxy), loadLocal.hel(now), loadLocal.aurorawatch()]);
+  state.localRaw = { tormestorp: tor.series ? tor : state.localRaw.tormestorp || null, hel: hel.series ? hel : state.localRaw.hel || null, aurorawatch: aw.status ? aw : state.localRaw.aurorawatch || null };
+  state.meta.tormestorp = tor.meta; state.meta.hel = hel.meta; state.meta.aurorawatch = aw.meta;
+}
+
 async function pollOvation() {
   const [txt, grid] = await Promise.all([load.ovationText(), load.json(URLS.ovationGrid)]);
   state.meta.ovation = txt.meta; if (txt.text) state.ovation = parseOvationText(txt.text);
@@ -98,10 +110,11 @@ async function pollOvation() {
 
 async function pollSlow() {
   const now = Date.now();
-  const [kpf, geomag, three, disc, out, alerts, scales, enlil, cmes, flares] = await Promise.all([
-    load.kpForecast(), load.text(URLS.geomagForecast), load.text(URLS.threeDay), load.text(URLS.discussion), load.text(URLS.outlook27), load.json(URLS.alerts), load.scales(), load.json(URLS.enlil), loadCmes(now, 10), load.json(URLS.xrayFlares7d),
+  const [kpf, geomag, three, disc, out, alerts, scales, enlil, cmes, flares, kyoto] = await Promise.all([
+    load.kpForecast(), load.text(URLS.geomagForecast), load.text(URLS.threeDay), load.text(URLS.discussion), load.text(URLS.outlook27), load.json(URLS.alerts), load.scales(), load.json(URLS.enlil), loadCmes(now, 10), load.json(URLS.xrayFlares7d), load.json(URLS.kyotoDst),
   ]);
   state.meta.kpForecast = kpf.meta; if (kpf.data.length) state.kpForecast = kpf.data;
+  if (Array.isArray(kyoto.data)) state.kyotoDst = kyoto.data.map(r => ({ t: Date.parse(r.time_tag + (String(r.time_tag).endsWith('Z') ? '' : 'Z')), dst: +r.dst })).filter(r => Number.isFinite(r.t) && Number.isFinite(r.dst));
   if (geomag.text) state.geomag = parseGeomagForecast(geomag.text);
   if (three.text) state.threeDay = parseThreeDayForecast(three.text);
   if (disc.text) state.discussion = parseDiscussion(disc.text);
@@ -133,16 +146,22 @@ function compute() {
   const arrived = state.propagated.filter(r => r.t <= now && r.t >= now - HOUR && Number.isFinite(r.coupling));
   const couplingRecent = arrived.length ? arrived.reduce((s, r) => s + r.coupling, 0) / arrived.length : NaN;
   state.substormOutlook = state.obs ? substormOutlook({ sub: state.sub, observer: state.obs, mag: state.mag, now, kp: kpLevel, ovation: state.ovation, couplingRecent, chainMlon: CHAIN_MLON }) : null;
+  // ring current: the latest observed Kyoto Dst when it is less than three hours old, else NOAA's modeled Dst
+  const kyotoLast = state.kyotoDst.filter(r => r.t <= now).slice(-1)[0], geoLast = state.geoDst.filter(r => r.t <= now).slice(-1)[0];
+  state.dst = kyotoLast && now - kyotoLast.t < 3 * HOUR ? { value: kyotoLast.dst, t: kyotoLast.t, source: 'Kyoto' } : geoLast ? { value: geoLast.dst, t: geoLast.t, source: 'Geospace model' } : null;
+  state.local = localSignal(state.localRaw, now);
+  state.sky = skyState(now, state.observer.lat, state.observer.lon);
   state.fc = shortTermForecast({ now, propagated: state.propagated, ovation: state.ovation, kp1m: state.kp1m, geospaceKp: state.geospaceKp, hp30: state.hp30, hpoForecast: state.hpo,
-    observer: state.obs, mag: state.mag, substorm: state.sub, coefficients: state.coefficients, outlook: state.substormOutlook });
+    observer: state.obs, mag: state.mag, substorm: state.sub, coefficients: state.coefficients, outlook: state.substormOutlook, dst: state.dst ? state.dst.value : NaN, local: state.local });
 }
 
 function renderShort() {
   const now = Date.now(); const fc = state.fc;
   const kpObs = state.kp1m.length ? state.kp1m[state.kp1m.length - 1].kp : NaN;
   const hp30 = state.hp30.length ? state.hp30[state.hp30.length - 1].value : NaN;
-  renderVerdict(fc, state.obs, state.mag, { thresholds: state.thresholds, kpObs, hp30 });
+  renderVerdict(fc, state.obs, state.mag, { thresholds: state.thresholds, tierThresholds: state.tierThresholds, kpObs, hp30, sky: state.sky, dst: state.dst });
   renderTiles(fc);
+  renderLocalSignals({ local: state.local, dst: state.dst, sky: state.sky, now, regime: fc?.regime });
   renderHorizonTable(fc);
   document.getElementById('short-sub').textContent = fc?.ok ? `Solar wind measured at L1 is already known up to ${fmt.hm(fc.tLast)} UTC (${fmt.int(fc.leadMin)} min ahead). Beyond that the band widens with an analog ensemble of the last week.` : 'Waiting for solar wind data.';
   if (fc?.ok) {
@@ -160,7 +179,7 @@ function renderShort() {
       { label: 'Bz (nT)', color: 'var(--s1)' }, { label: 'Bt (nT)', color: 'var(--muted)' }, { label: 'speed', color: 'var(--s2)' }, { label: 'coupling, forecast band', color: 'var(--s1)', kind: 'area' },
       { label: 'Kp modeled from solar wind', color: 'var(--s1)' }, { label: 'Kp forecast (median, 10–90%)', color: 'var(--s1)', kind: 'dash' }, { label: 'Hp30 observed (GFZ)', color: 'var(--s2)' }, { label: 'Kp estimated (NOAA)', color: 'var(--s4)' }, { label: 'Kp Geospace model (NOAA)', color: 'var(--s7)' },
     ]);
-    boundaryChart(document.getElementById('boundary-chart'), fc.horizons, state.obs.mlat, VIEW_ALLOWANCE_DEG);
+    boundaryChart(document.getElementById('boundary-chart'), fc.horizons, state.obs.mlat, VIEW_ALLOWANCE_DEG, fc.regime === 'auroral' ? null : TIERS);
   }
   // map
   if (state.ovationGrid) {
@@ -235,6 +254,9 @@ function renderFreshnessStrip() {
     { label: 'OVATION', t: state.ovation?.obsTime, exp: 20 }, { label: 'NOAA est. Kp', t: last(state.kp1m), exp: 10 }, { label: 'Geospace Kp', t: state.meta.geospace?.lastModified || state.meta.geospace?.fetchedAt, exp: 10 },
     { label: proxy.available ? 'GFZ Hp30' : 'Hp30 (iSWA mirror)', t: last(state.hp30) + 30 * MIN, exp: proxy.available ? 35 : 90 },
     { label: state.stationSource === 'INTERMAGNET' ? 'INTERMAGNET' : 'FMI magnetometers', t: state.stations.length ? Math.max(...state.stations.map(s => s.series.t[s.series.t.length - 1])) : NaN, exp: 10 },
+    { label: 'Tormestorp', t: state.localRaw.tormestorp?.series?.t?.length ? state.localRaw.tormestorp.series.t[state.localRaw.tormestorp.series.t.length - 1] : NaN, exp: 5, hide: !proxy.available },
+    { label: 'Hel (INTERMAGNET)', t: state.localRaw.hel?.series?.t?.length ? state.localRaw.hel.series.t[state.localRaw.hel.series.t.length - 1] : NaN, exp: 15 },
+    { label: 'AuroraWatch UK', t: state.localRaw.aurorawatch?.updated, exp: 10 },
     { label: 'Kp forecast', t: state.meta.kpForecast?.lastModified || state.meta.kpForecast?.fetchedAt, exp: 12 * 60 }, { label: 'DONKI CMEs', t: state.meta.donki?.fetchedAt, exp: 30 },
     { label: 'WSA-Enlil', t: state.meta.enlil?.lastModified || state.meta.enlil?.fetchedAt, exp: 12 * 60 }, { label: 'GFZ ensemble', t: state.meta.gfzEnsemble?.lastModified || state.meta.gfzEnsemble?.fetchedAt, exp: 4 * 60, hide: !proxy.available },
   ];
@@ -258,9 +280,10 @@ async function boot() {
   const init = Number.isFinite(qLat) && Number.isFinite(qLon) && Math.abs(qLat) <= 90 && Math.abs(qLon) <= 180 ? { lat: qLat, lon: qLon } : saved && Number.isFinite(saved.lat) ? saved : { lat: 55.676, lon: 12.568 };
   setObserver(init.lat, init.lon); syncLocationForm();
   const seven = await load.propagated(URLS.propagated7d); state.meta.propagated7 = seven.meta; state.propagated = seven.data;
-  await Promise.all([pollFast(), pollOvation(), pollHp30(), pollSlow()]);
+  await Promise.all([pollFast(), pollOvation(), pollHp30(), pollSlow(), pollLocal()]);
   renderAll();
   setInterval(async () => { await pollFast(); renderAll(); }, 60e3);
+  setInterval(async () => { await pollLocal(); renderAll(); }, 2 * 60e3);
   setInterval(async () => { await pollOvation(); renderAll(); }, 5 * 60e3);
   setInterval(async () => { await pollHp30(); renderAll(); }, 2 * 60e3);
   setInterval(async () => { await pollSlow(); renderAll(); }, 15 * 60e3);

@@ -7,7 +7,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { parseOmniLine, parseHp30Line, buildTable, ols, robustOls, predict, skill, lagQuantiles, reliability, histogram, round, MIN } from './lib.mjs';
+import { parseOmniLine, parseHp30Line, buildTable, ols, robustOls, predict, skill, lagQuantiles, reliability, histogram, round, MIN, blendCalibration } from './lib.mjs';
 import { NEWELL2008 } from '../web/src/model/activity.mjs';
 import { runScoreboard } from './scoreboard.mjs';
 
@@ -82,10 +82,12 @@ export async function calibrate({ years = 2, offline = false } = {}) {
     const fitAll = robustOls(table); // shipped coefficients use all data; sigma is the honest test RMSE
     const lags = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120];
     const extrap = lagQuantiles(omni, lags, 5 * MIN);
-    coefficients.hp30 = { intercept: round(fitAll.coef.intercept, 5), coupling: round(fitAll.coef.coupling, 5), viscous: round(fitAll.coef.viscous, 5), sigma: round(ours.rmse, 4), n: table.length,
-      fittedOn: 'GFZ Hp30 (CC BY 4.0) vs OMNI 5-min at the bow shock nose, OVATION 4-hour weighting, robust OLS on all rows; sigma = RMSE on the chronological 20% test split', droppedOutliers: fitAll.dropped };
-    coefficients.hp30_storm = stormFit ? { intercept: round(stormFit.coef.intercept, 5), coupling: round(stormFit.coef.coupling, 5), viscous: round(stormFit.coef.viscous, 5), n: stormTrain.length,
+    coefficients.hp30 = { intercept: round(fitAll.coef.intercept, 5), sqrtCoupling: round(fitAll.coef.sqrtCoupling, 5), coupling: round(fitAll.coef.coupling, 6), viscous: round(fitAll.coef.viscous, 5), sigma: round(ours.rmse, 4), n: table.length,
+      fittedOn: 'GFZ Hp30 (CC BY 4.0) vs OMNI 5-min at the bow shock nose, OVATION 4-hour weighting; Hp30 = a + d sqrt(coupling) + b coupling + c viscous, robust OLS on all rows; sigma = RMSE on the chronological 20% test split', droppedOutliers: fitAll.dropped };
+    coefficients.hp30_storm = stormFit ? { intercept: round(stormFit.coef.intercept, 5), sqrtCoupling: round(stormFit.coef.sqrtCoupling, 5), coupling: round(stormFit.coef.coupling, 6), viscous: round(stormFit.coef.viscous, 5), n: stormTrain.length,
       testBiasGeneral: round(stormSkillOurs.bias, 4), testBiasStormFit: round(stormSkillStorm.bias, 4), testRmseStormFit: round(stormSkillStorm.rmse, 4), note: 'fit on intervals with Hp30 >= 3 only; negative bias means the model under-predicts storms' } : null;
+    // persistence weight and total spread of the model/persistence blend, per lead
+    coefficients.blend = { ...blendCalibration(omni, hp, fitAll.coef), note: 'weight = share of the last observed Hp30 in the blend (issue-time age about 15 min); sigma = RMSE of that blend on the Hp30 scale, used as the probability spread; driving measured for leads <= 45 min, frozen at issue time beyond' };
     coefficients.extrapolation = { members: 200, floor: 300, cadenceMin: 5, ...extrap };
     coefficients.skill = { test: { n: test.length, ours: fmt(ours), newell2008: fmt(newell), persistence: fmt(persistence), stormRows: stormTest.length, oursOnStorms: fmt(stormSkillOurs) },
       train: { n: train.length, coef: fitTrain.coef, dropped: fitTrain.dropped } };
@@ -94,9 +96,10 @@ export async function calibrate({ years = 2, offline = false } = {}) {
     report = { ...report, skill: coefficients.skill, reliability: reliability(pred, obs, [3, 4, 5], 0.5), residuals: histogram(pred.map((p, i) => p - obs[i]), 0.25, -4, 4),
       testWindow: { from: new Date(test[0].t).toISOString(), to: new Date(test[test.length - 1].t).toISOString() },
       hp30Distribution: { train: dist(train.map(r => r.hp30)), test: dist(obs) } };
-    console.log('\nHp30 = a + b*coupling4h + c*viscous4h');
-    console.log(`  shipped (all rows, robust): a=${coefficients.hp30.intercept} b=${coefficients.hp30.coupling} c=${coefficients.hp30.viscous} (dropped ${fitAll.dropped} outliers)`);
-    console.log(`  train fit: a=${round(fitTrain.coef.intercept, 5)} b=${round(fitTrain.coef.coupling, 5)} c=${round(fitTrain.coef.viscous, 5)}`);
+    console.log('\nHp30 = a + d*sqrt(coupling4h) + b*coupling4h + c*viscous4h');
+    console.log(`  shipped (all rows, robust): a=${coefficients.hp30.intercept} d=${coefficients.hp30.sqrtCoupling} b=${coefficients.hp30.coupling} c=${coefficients.hp30.viscous} (dropped ${fitAll.dropped} outliers)`);
+    console.log(`  train fit: a=${round(fitTrain.coef.intercept, 5)} d=${round(fitTrain.coef.sqrtCoupling, 5)} b=${round(fitTrain.coef.coupling, 6)} c=${round(fitTrain.coef.viscous, 5)}`);
+    console.log(`  blend by lead: ${coefficients.blend.leads.map((h, i) => `+${h}: w ${coefficients.blend.weight[i]} sigma ${coefficients.blend.sigma[i]} (model ${coefficients.blend.modelRmse[i]}, persistence ${coefficients.blend.persistenceRmse[i]}, n ${coefficients.blend.n[i]})`).join('; ')}`);
     console.log(`  test (${test.length} rows, ${report.testWindow.from.slice(0, 10)} .. ${report.testWindow.to.slice(0, 10)}):`);
     for (const [k, v] of Object.entries(coefficients.skill.test)) if (v && typeof v === 'object') console.log(`    ${k.padEnd(14)} rmse=${v.rmse} mae=${v.mae} bias=${v.bias} r=${v.r}`);
     if (coefficients.hp30_storm) console.log(`  storms (Hp30>=3, ${stormTest.length} test rows): general-fit bias ${coefficients.hp30_storm.testBiasGeneral}, storm-fit bias ${coefficients.hp30_storm.testBiasStormFit}`);

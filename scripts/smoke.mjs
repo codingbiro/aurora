@@ -42,15 +42,20 @@ console.log(`outlook (${outlook.regime}): MLT ${outlook.mltNow.toFixed(1)}, chai
 console.log(`  [${outlook.tone}] ${outlook.headline} — ${outlook.detail}`);
 console.log('  h   reach  pOnset  pOnsetLocal'); for (const r of outlook.horizons) console.log(`  ${String(r.h).padStart(3)} ${r.reach.toFixed(2).padStart(6)} ${r.pOnset.toFixed(2).padStart(7)} ${r.pOnsetLocal.toFixed(2).padStart(8)}`);
 
-const fc = shortTermForecast({ now, propagated, ovation, kp1m: kp1.data, geospaceKp: geo.data, observer: obs, mag, substorm: sub, outlook });
+const coefs = JSON.parse(await readFile(new URL('../web/data/coefficients.json', import.meta.url), 'utf8'));
+const kyoto = await fetchWithMeta('https://services.swpc.noaa.gov/products/kyoto-dst.json'); const dstRow = kyoto.ok ? kyoto.body.filter(r => Date.parse(r.time_tag + 'Z') <= now).slice(-1)[0] : null;
+const dst = dstRow ? +dstRow.dst : NaN;
+console.log(`dst (Kyoto) ${dst} nT at ${dstRow?.time_tag}`);
+const fc = shortTermForecast({ now, propagated, ovation, kp1m: kp1.data, geospaceKp: geo.data, observer: obs, mag, substorm: sub, outlook, coefficients: coefs, dst });
 if (!fc.ok) { console.log('forecast failed:', fc.reason); process.exit(1); }
 console.log(`current: driving ${fc.current.drivingNow?.toFixed(0)} -> Kp ${fc.current.kpNow?.toFixed(2)}; Bz ${fc.current.bz} nT v ${fc.current.speed} km/s; ovation boundary ${fc.current.ovationBoundary?.toFixed(1)} margin ${fc.current.margin?.toFixed(1)} (${fc.current.visibility})`);
 console.log(`thresholds for this site at MLT 23: horizon Kp ${kpForBoundary(obs.mlat + 8, 23).toFixed(2)}, overhead Kp ${kpForBoundary(obs.mlat, 23).toFixed(2)}`);
-console.log('h   lead  cpl(med p10-p90)      Kp(med p10-p90)   geo   bound(med) margin  pHor  pOver phase pOn  pVis');
+console.log(`regime ${fc.regime}; blend weights ${fc.blend ? fc.blend.weights.join('/') : 'default'}, sigma ${fc.blend ? fc.blend.sigma.join('/') : '-'}`);
+console.log('h   lead  cpl(med p10-p90)      Kp(med p10-p90)   geo   bound(med) margin  cam   eyeD  eyeC  over  phase pOn  headline');
 for (const r of fc.horizons) {
   console.log(`${String(r.h).padStart(3)} ${r.leadCovered ? 'meas' : 'ext '} ${r.coupling.median.toFixed(0).padStart(6)} (${r.coupling.p10.toFixed(0)}-${r.coupling.p90.toFixed(0)})`.padEnd(38)
     + `${r.kp.median.toFixed(2)} (${r.kp.p10.toFixed(2)}-${r.kp.p90.toFixed(2)})`.padEnd(20) + `${Number.isFinite(r.kp.geospace) ? r.kp.geospace.toFixed(2) : '  -  '} `
-    + `${r.boundary.median.toFixed(1).padStart(6)} ${r.margin.toFixed(1).padStart(7)} ${r.pHorizon.toFixed(2).padStart(6)} ${r.pOverhead.toFixed(2).padStart(6)} ${r.phaseFactor.toFixed(2)} ${Number.isFinite(r.pOnset) ? r.pOnset.toFixed(2) : ' -  '} ${r.pVisible.toFixed(2)}`);
+    + `${r.boundary.median.toFixed(1).padStart(6)} ${r.margin.toFixed(1).padStart(7)} ${r.tiers.camera.toFixed(2).padStart(5)} ${r.tiers.eyeDark.toFixed(2).padStart(5)} ${r.tiers.eyeCity.toFixed(2).padStart(5)} ${r.tiers.overhead.toFixed(2).padStart(5)} ${r.phaseFactor.toFixed(2)} ${Number.isFinite(r.pOnset) ? r.pOnset.toFixed(2) : ' -  '} ${r.pVisible.toFixed(2)}`);
 }
 console.log('verdict:', fc.verdict.headline, '|', fc.verdict.detail);
 console.log(`done in ${Date.now() - t0} ms`);

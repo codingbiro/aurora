@@ -8,13 +8,14 @@ export const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, x));
 export function kpFromDriving(couplingAvg, viscousAvg, coef = NEWELL2008) {
   if (!Number.isFinite(couplingAvg)) return NaN;
   const visc = Number.isFinite(viscousAvg) ? viscousAvg : 0;
-  return clamp(coef.intercept + coef.coupling * couplingAvg + coef.viscous * visc, 0, 9);
+  const sq = Number.isFinite(coef.sqrtCoupling) ? coef.sqrtCoupling * Math.sqrt(Math.max(couplingAvg, 0)) : 0;
+  return clamp(coef.intercept + sq + coef.coupling * couplingAvg + coef.viscous * visc, 0, 9);
 }
 
 /**
- * Hp30 from our calibrated linear model (coefficients.json). Falls back to the Kp
- * regression, since Hp30 is on the Kp scale. Coefficient object shape:
- * { intercept, coupling, viscous, sigma, fittedOn, n }.
+ * Hp30 from our calibrated model (coefficients.json): a + d sqrt(coupling) + b coupling + c viscous,
+ * the square-root term lifting the storm end. Falls back to the Kp regression, since Hp30 is on the
+ * Kp scale. Coefficient object shape: { intercept, sqrtCoupling?, coupling, viscous, sigma, fittedOn, n }.
  */
 export function hp30FromDriving(couplingAvg, viscousAvg, coefs, stormCoefs = null) {
   const c = coefs && Number.isFinite(coefs.coupling) ? coefs : NEWELL2008;

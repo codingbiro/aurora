@@ -50,7 +50,7 @@ test('OLS recovers known coefficients and the robust refit tolerates one outlier
   const coef = ols(rows);
   assert.ok(Math.abs(coef.intercept - 0.4) < 1e-6 && Math.abs(coef.coupling - 2e-4) < 1e-9 && Math.abs(coef.viscous - 3e-6) < 1e-11);
   rows.push({ hp30: 40, coupling: 600, viscous: 1e5 }); // gross outlier
-  const rob = robustOls(rows);
+  const rob = robustOls(rows, 3, ['coupling', 'viscous']);
   assert.equal(rob.dropped, 1);
   assert.ok(Math.abs(rob.coef.coupling - 2e-4) < 1e-7);
   const s = skill(rows.slice(0, 400).map(r => predict(rob.coef, r)), rows.slice(0, 400).map(r => r.hp30));

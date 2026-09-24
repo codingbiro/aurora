@@ -68,13 +68,14 @@
       <p class="panel-sub" id="short-sub">Solar wind measured 1.5 million km upstream arrives here in 30 to 90 minutes. Beyond that the forecast widens.</p>
     </div>
     <div class="tiles" id="tiles" role="list"></div>
+    <ul class="freshness signals" id="local-signals" aria-label="Sky, ring current and local magnetometers"></ul>
     <figure class="chart" id="timeline">
       <figcaption>Solar wind driving and activity, last 6 hours and next 2 hours</figcaption>
       <div class="chart-body" id="timeline-chart"></div>
       <div class="legend" id="timeline-legend"></div>
     </figure>
     <figure class="chart" id="boundary">
-      <figcaption>Where the oval's equatorward edge sits relative to you</figcaption>
+      <figcaption>Where the oval's equatorward edge sits relative to you, with the visibility tiers</figcaption>
       <div class="chart-body" id="boundary-chart"></div>
     </figure>
     <figure class="chart" id="map">
@@ -152,7 +153,7 @@
     <summary>How this works and where the data comes from</summary>
     <div class="method" id="method"></div>
   </details>
-  <p class="credits">Data: NOAA SWPC (solar wind, OVATION Prime, Kp, WSA-Enlil, alerts) · NASA CCMC DONKI (CME arrivals) · GFZ Potsdam Hp30 and Kp forecasts, CC BY 4.0 · Finnish Meteorological Institute IMAGE magnetometers, CC BY 4.0 · Tromsø Geophysical Observatory K-indices · INTERMAGNET (CC BY-NC 4.0) · UK Met Office · SIDC/ROB · Natural Earth. Personal, non-commercial use. <a href="verify.html">Model check</a> · <a href="https://github.com/codingbiro/aurora">Source</a></p>
+  <p class="credits">Data: NOAA SWPC (solar wind, OVATION Prime, Kp, WSA-Enlil, alerts) · NASA CCMC DONKI (CME arrivals) · GFZ Potsdam Hp30 and Kp forecasts, CC BY 4.0 · Finnish Meteorological Institute IMAGE magnetometers, CC BY 4.0 · Tromsø Geophysical Observatory K-indices · Swedish Institute of Space Physics Tormestorp and Kiruna (provisional) · AuroraWatch UK, Lancaster University · World Data Center Kyoto Dst · INTERMAGNET (CC BY-NC 4.0) · UK Met Office · SIDC/ROB · Natural Earth. Personal, non-commercial use. <a href="verify.html">Model check</a> · <a href="https://github.com/codingbiro/aurora">Source</a></p>
 </footer>
 <script type="module" src="src/app.mjs"></script>
 </body>

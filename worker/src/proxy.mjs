@@ -45,6 +45,20 @@ export const ROUTES = [
     upstream: () => 'https://www2.irf.se/maggraphs/rt_iaga_last_hour_secondary.txt',
   },
   {
+    // Tormestorp (56.0 N 13.9 E) 1-second variometer: only the tail of today's file (the last ~2.5 hours) is fetched, with a Range header.
+    match: /^\/api\/irf\/tormestorp\/tail$/, ttl: 60, type: 'text/plain', attribution: 'Swedish Institute of Space Physics, Tormestorp (provisional)',
+    upstream: () => { const d = new Date(); const y = d.getUTCFullYear(), m = String(d.getUTCMonth() + 1).padStart(2, '0'), dd = String(d.getUTCDate()).padStart(2, '0'); return `https://www2.irf.se/maggraphs/tormestorp/${y}/${m}/${dd}/lnd_${y}${m}${dd}000000.csv`; },
+    headers: { Range: 'bytes=-400000' }, cacheKeyExtra: 'tail',
+  },
+  {
+    match: /^\/api\/irf\/tormestorp\/quiet$/, ttl: 3600, type: 'text/plain', attribution: 'Swedish Institute of Space Physics, Tormestorp (quiet-day curve)',
+    upstream: () => 'https://www2.irf.se/maggraphs/tormestorp/quiet_day_ascii',
+  },
+  {
+    match: /^\/api\/irf\/tormestorp\/k$/, ttl: 120, type: 'text/plain', attribution: 'Swedish Institute of Space Physics, Tormestorp (provisional K)',
+    upstream: () => 'https://www2.irf.se/maggraphs/tormestorp/get_kindex_tormestorp.php',
+  },
+  {
     match: /^\/api\/tgo\/k\/([a-z0-9]{5})$/, ttl: 600, type: 'text/plain', attribution: 'Tromsø Geophysical Observatory, UiT (provisional K-indices)',
     upstream: (m) => (TGO_SITES.has(m[1]) ? `https://flux.phys.uit.no/Kindice/k_${m[1]}.txt` : null),
   },
@@ -86,21 +100,22 @@ export async function handleApi(request, env = {}) {
     const upstream = route.upstream(m, url);
     if (!upstream) return json({ error: 'bad parameters' }, 400, cors);
     const now = Date.now();
-    const hit = memoryCache.get(upstream);
+    const cacheId = route.cacheKeyExtra ? `${upstream}#${route.cacheKeyExtra}` : upstream;
+    const hit = memoryCache.get(cacheId);
     if (hit && hit.expires > now) return respond(hit, route, cors, 'HIT', now);
-    const edge = await edgeCacheGet(upstream, route, now);
-    if (edge) { memoryCache.set(upstream, edge); return respond(edge, route, cors, 'EDGE', now); }
+    const edge = await edgeCacheGet(cacheId, route, now);
+    if (edge) { memoryCache.set(cacheId, edge); return respond(edge, route, cors, 'EDGE', now); }
     try {
-      const res = await fetch(upstream, { headers: { 'User-Agent': 'aurora-dashboard/1.0 (+https://github.com/codingbiro/aurora)', 'Accept': '*/*' }, redirect: 'follow' });
-      if (!res.ok) {
+      const res = await fetch(upstream, { headers: { 'User-Agent': 'aurora-dashboard/1.0 (+https://github.com/codingbiro/aurora)', 'Accept': '*/*', ...(route.headers || {}) }, redirect: 'follow' });
+      if (!res.ok) { // 206 Partial Content counts as ok
         if (hit) return respond(hit, route, cors, 'STALE', now);
         return json({ error: `upstream ${res.status}`, upstream }, 502, cors);
       }
       const body = await res.arrayBuffer();
       const entry = { expires: now + route.ttl * 1000, status: 200, type: route.type, body, lastModified: res.headers.get('last-modified') || '', fetchedAt: now };
-      memoryCache.set(upstream, entry);
+      memoryCache.set(cacheId, entry);
       pruneCache();
-      await edgeCachePut(upstream, entry, route);
+      await edgeCachePut(cacheId, entry, route);
       return respond(entry, route, cors, 'MISS', now);
     } catch (err) {
       if (hit) return respond(hit, route, cors, 'STALE', now);

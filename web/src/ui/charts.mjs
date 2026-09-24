@@ -146,7 +146,7 @@ function step(g, data, x, y, color, width) {
 /**
  * Boundary vs observer: horizons [{h, boundary{median,p10,p90,ovation}, margin, pVisible}], observerMlat, allowance.
  */
-export function boundaryChart(container, horizons, observerMlat, allowance = 8) {
+export function boundaryChart(container, horizons, observerMlat, allowance = 8, tiers = null) {
   const width = Math.max(container.clientWidth || 720, 480), height = 200;
   const m = { top: 12, right: 14, bottom: 28, left: 44 };
   const svg = svgIn(container, width, height);
@@ -162,12 +162,16 @@ export function boundaryChart(container, horizons, observerMlat, allowance = 8) 
   svg.selectAll(null).data(ov).enter().append('circle').attr('cx', r => x(r.h)).attr('cy', r => y(r.boundary.ovation)).attr('r', 3.5).attr('fill', css('--s2')).attr('stroke', css('--surface')).attr('stroke-width', 1.5);
   svg.append('line').attr('x1', m.left).attr('x2', width - m.right).attr('y1', y(observerMlat)).attr('y2', y(observerMlat)).attr('stroke', css('--ink')).attr('stroke-width', 1.5);
   svg.append('text').attr('x', m.left + 4).attr('y', y(observerMlat) - 4).attr('font-size', 10).attr('fill', css('--ink')).text(`you: ${observerMlat.toFixed(1)}° magnetic`);
-  svg.append('text').attr('x', m.left + 4).attr('y', y(observerMlat + allowance) - 4).attr('font-size', 10).attr('fill', css('--ink-2')).text(`visible low in the north when the edge is above this line (${allowance}° allowance)`);
+  svg.append('text').attr('x', m.left + 4).attr('y', y(observerMlat + allowance) - 4).attr('font-size', 10).attr('fill', css('--ink-2')).text(tiers ? `camera from a dark site when the edge is below this line (${allowance}°)` : `visible low in the north when the edge is above this line (${allowance}° allowance)`);
+  if (tiers) for (const [name, allow] of [['naked eye, dark site', tiers.eyeDark], ['naked eye, city', tiers.eyeCity]]) {
+    svg.append('line').attr('x1', m.left).attr('x2', width - m.right).attr('y1', y(observerMlat + allow)).attr('y2', y(observerMlat + allow)).attr('stroke', css('--ink-2')).attr('stroke-dasharray', '2 4');
+    svg.append('text').attr('x', width - m.right - 4).attr('y', y(observerMlat + allow) - 3).attr('text-anchor', 'end').attr('font-size', 10).attr('fill', css('--ink-2')).text(`${name} (${allow}°)`);
+  }
   svg.append('g').attr('class', 'axis').attr('transform', `translate(0,${height - m.bottom})`).call(d3.axisBottom(x).tickValues([0, 30, 60, 90, 120]).tickFormat(v => `+${v} min`).tickSizeOuter(0)).selectAll('text').attr('fill', css('--ink-2'));
   svg.append('g').attr('class', 'axis').attr('transform', `translate(${m.left},0)`).call(d3.axisLeft(y).ticks(5).tickFormat(v => `${v}°`).tickSizeOuter(0)).selectAll('text').attr('fill', css('--ink-2'));
   const tip = tooltip(container);
   svg.selectAll(null).data(horizons).enter().append('rect').attr('x', r => x(r.h) - 5).attr('width', 10).attr('y', m.top).attr('height', height - m.top - m.bottom).attr('fill', 'transparent')
-    .on('pointerenter', (ev, r) => { const [px, py] = d3.pointer(ev, svg.node()); tip.show(px * (container.clientWidth / width), py * (container.clientWidth / width), `<div class="t">+${r.h} min · ${fmt.hm(r.t)} UTC · MLT ${r.mlt.toFixed(1)}</div><table><tr><td>edge (median)</td><td class="v">${fmt.deg(r.boundary.median)}</td></tr><tr><td>edge 10–90%</td><td class="v">${fmt.deg(r.boundary.p10)}–${fmt.deg(r.boundary.p90)}</td></tr>${Number.isFinite(r.boundary.ovation) ? `<tr><td>OVATION edge</td><td class="v">${fmt.deg(r.boundary.ovation)}</td></tr>` : ''}<tr><td>margin</td><td class="v">${fmt.signed(r.margin)}°</td></tr><tr><td>P(visible)</td><td class="v">${fmt.pct(r.pVisible)}</td></tr></table>`); })
+    .on('pointerenter', (ev, r) => { const [px, py] = d3.pointer(ev, svg.node()); tip.show(px * (container.clientWidth / width), py * (container.clientWidth / width), `<div class="t">+${r.h} min · ${fmt.hm(r.t)} UTC · MLT ${r.mlt.toFixed(1)}</div><table><tr><td>edge (median)</td><td class="v">${fmt.deg(r.boundary.median)}</td></tr><tr><td>edge 10–90%</td><td class="v">${fmt.deg(r.boundary.p10)}–${fmt.deg(r.boundary.p90)}</td></tr>${Number.isFinite(r.boundary.ovation) ? `<tr><td>OVATION edge</td><td class="v">${fmt.deg(r.boundary.ovation)}</td></tr>` : ''}<tr><td>margin</td><td class="v">${fmt.signed(r.margin)}°</td></tr>${r.tiers ? `<tr><td>camera / eye dark / eye city</td><td class="v">${fmt.pct(r.tiers.camera)} / ${fmt.pct(r.tiers.eyeDark)} / ${fmt.pct(r.tiers.eyeCity)}</td></tr>` : ''}<tr><td>P(headline)</td><td class="v">${fmt.pct(r.pVisible)}</td></tr></table>`); })
     .on('pointerleave', () => tip.hide());
 }
 

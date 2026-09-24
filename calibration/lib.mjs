@@ -54,7 +54,7 @@ export function buildTable(omni, hp, { minHours = 3 } = {}) {
     const c = weightedRecentAverage(omni, h.tEnd, 'coupling', { minHours });
     const v = weightedRecentAverage(omni, h.tEnd, 'viscous', { minHours });
     if (Number.isFinite(c.value) && Number.isFinite(v.value)) {
-      rows.push({ t: h.tEnd, hp30: h.hp30, coupling: c.value, viscous: v.value, prevHp30: prev && prev.tEnd === h.tStart ? prev.hp30 : NaN });
+      rows.push({ t: h.tEnd, hp30: h.hp30, coupling: c.value, sqrtCoupling: Math.sqrt(Math.max(c.value, 0)), viscous: v.value, prevHp30: prev && prev.tEnd === h.tStart ? prev.hp30 : NaN });
     }
     prev = h;
   }
@@ -96,18 +96,65 @@ export function solve(A, B) {
   return M.map((row, i) => row[n] / row[i]);
 }
 
+/** Hp30 = a + b coupling + c viscous (+ d sqrt(coupling) when the coefficient is present). */
 export function predict(coef, r) {
-  return coef.intercept + coef.coupling * r.coupling + coef.viscous * r.viscous;
+  const sq = Number.isFinite(coef.sqrtCoupling) ? coef.sqrtCoupling * (Number.isFinite(r.sqrtCoupling) ? r.sqrtCoupling : Math.sqrt(Math.max(r.coupling, 0))) : 0;
+  return coef.intercept + coef.coupling * r.coupling + coef.viscous * r.viscous + sq;
 }
 
+/** Regressors of the shipped model: the square-root term lifts the storm end of the fit. */
+export const MODEL_KEYS = ['sqrtCoupling', 'coupling', 'viscous'];
+
 /** Robust refit: fit, drop |residual| > k sigma, fit again. */
-export function robustOls(rows, k = 3) {
-  const first = ols(rows);
+export function robustOls(rows, k = 3, keys = MODEL_KEYS) {
+  const first = ols(rows, keys);
   if (!first) return null;
   const res = rows.map(r => r.hp30 - predict(first, r));
   const sigma = Math.sqrt(res.reduce((s, e) => s + e * e, 0) / Math.max(1, res.length));
   const kept = rows.filter((r, i) => Math.abs(res[i]) <= k * sigma);
-  return { coef: ols(kept) || first, dropped: rows.length - kept.length, sigmaFirst: sigma };
+  return { coef: ols(kept, keys) || first, dropped: rows.length - kept.length, sigmaFirst: sigma };
+}
+
+/**
+ * Blend calibration by lead: for the interval ending h minutes after issue, the model is run with the
+ * driving measured (h <= 45 min, inside the usual L1 lead) or frozen at issue time (beyond it), and
+ * blended with the last complete Hp30 at issue time (on average 15 min old). Returns, per lead, the
+ * persistence weight that minimises the RMSE, that RMSE (the spread to use for probabilities), and the
+ * RMSE of model and persistence alone.
+ * omni: ascending 5-min [{t, coupling, viscous}]; hp: ascending [{tStart, tEnd, hp30}]; coef: shipped coefficients.
+ */
+export function blendCalibration(omni, hp, coef, leads = [0, 30, 60, 90, 120]) {
+  const HOUR = 3600e3, W = [1, 0.65, 0.4225, 0.274625];
+  const lowerBound = (t) => { let lo = 0, hi = omni.length; while (lo < hi) { const m = (lo + hi) >> 1; if (omni[m].t < t) lo = m + 1; else hi = m; } return lo; };
+  const weighted = (T, key, known) => {
+    let num = 0, den = 0, used = 0;
+    const iK = known < T ? lowerBound(known + 1) - 1 : -1; const frozen = iK >= 0 ? omni[iK][key] : NaN;
+    for (let k = 0; k < 4; k++) {
+      const t0 = T - (k + 1) * HOUR, t1 = T - k * HOUR; let s = 0, n = 0;
+      for (let i = lowerBound(t0); i < omni.length && omni[i].t < t1; i++) { const v = omni[i].t > known ? frozen : omni[i][key]; if (Number.isFinite(v)) { s += v; n++; } }
+      if (n) { num += W[k] * s / n; den += W[k]; used++; }
+    }
+    return used >= 3 ? num / den : NaN;
+  };
+  const byEnd = new Map(hp.map(r => [r.tEnd, r.hp30]));
+  const step = Math.max(1, Math.floor(hp.length / 12000)); // subsample for speed; the fit needs a few thousand rows
+  const out = { leads, weight: [], sigma: [], modelRmse: [], persistenceRmse: [], n: [] };
+  for (const h of leads) {
+    const kBack = Math.ceil((h + 15) / 30); const known = h <= 45 ? Infinity : null;
+    const cand = [];
+    for (let i = 0; i < hp.length; i += step) {
+      const r = hp[i], T = r.tEnd, issue = T - h * MIN;
+      const c = weighted(T, 'coupling', known === null ? issue : Infinity), v = weighted(T, 'viscous', known === null ? issue : Infinity);
+      const pers = byEnd.get(T - kBack * 30 * MIN);
+      if (![c, v, pers].every(Number.isFinite)) continue;
+      cand.push({ o: r.hp30, m: Math.max(0, predict(coef, { coupling: c, sqrtCoupling: Math.sqrt(Math.max(c, 0)), viscous: v })), p: pers });
+    }
+    let bestW = 0, bestR = Infinity, mR = 0, pR = 0;
+    for (const c of cand) { mR += (c.m - c.o) ** 2; pR += (c.p - c.o) ** 2; }
+    for (let w = 0; w <= 1.0001; w += 0.05) { let se = 0; for (const c of cand) { const e = (1 - w) * c.m + w * c.p - c.o; se += e * e; } const rm = Math.sqrt(se / cand.length); if (rm < bestR) { bestR = rm; bestW = w; } }
+    out.weight.push(round(bestW, 3)); out.sigma.push(round(bestR, 4)); out.modelRmse.push(round(Math.sqrt(mR / cand.length), 4)); out.persistenceRmse.push(round(Math.sqrt(pR / cand.length), 4)); out.n.push(cand.length);
+  }
+  return out;
 }
 
 /** RMSE, MAE, bias, Pearson r between predictions and observations (NaN-safe). */

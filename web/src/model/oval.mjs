@@ -186,6 +186,33 @@ export function kpForBoundary(targetMlat, mlt, kind = 'hybrid') {
   return hi;
 }
 
+/**
+ * Equatorward boundary of the electron aurora set by the ring current during storms (Yokoyama,
+ * Kamide & Miyaoka 1998, DMSP): 55-65 deg for Dst > -50 nT, below 50 deg once Dst < -100 nT, then
+ * 6-7 deg further per 100 nT. Returns NaN above -50 nT, where Dst says nothing about the edge.
+ */
+export function dstBoundary(dst) {
+  if (!Number.isFinite(dst) || dst > -50) return NaN;
+  if (dst >= -100) return 55 + (dst + 50) * 0.1;
+  return 50 + (dst + 100) * 0.065;
+}
+
+/** Weight of the Dst boundary in the blend with the Kp-driven edge: 0 at -50 nT rising to 0.5 at -100 nT. */
+export function dstWeight(dst) {
+  if (!Number.isFinite(dst) || dst > -50) return 0;
+  return Math.min(0.5, (-50 - dst) / 100);
+}
+
+/**
+ * Visibility tiers as the allowance (degrees the edge may sit poleward of the observer). The 8 deg
+ * envelope of Case et al. 2016 fits camera reports from dark sites; AuroraWatch UK's calibration at
+ * 51-54 deg magnetic latitude (camera 50 nT, naked eye at a dark site 100 nT, naked eye anywhere
+ * 200 nT) and the geometry of a 100-250 km emission layer give about 5 deg for the naked eye from a
+ * dark site and 3 deg from a light-polluted city.
+ */
+export const TIERS = { camera: 8, eyeDark: 5, eyeCity: 3, overhead: 0 };
+export const TIER_ORDER = ['camera', 'eyeDark', 'eyeCity', 'overhead'];
+
 /** Visibility class from the margin (boundary latitude minus observer latitude). */
 export const VIEW_ALLOWANCE_DEG = 8; // Case et al. 2016: sightings extend ~8 deg equatorward of the 1 erg edge
 export function visibilityClass(marginDeg) {

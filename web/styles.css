@@ -82,6 +82,8 @@ input[type="number"] { width: 5.5em; font-family: var(--mono); }
 .freshness li.aging::before { background: var(--warn); }
 .freshness li.stale::before, .freshness li.missing::before { background: var(--critical); }
 .freshness li .age { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.signals { margin-top: -4px; }
+.signals li { font-size: 0.8rem; }
 
 /* layout */
 .grid { max-width: 1400px; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
