@@ -460,8 +460,8 @@ describe('shortterm', async () => {
     assert.ok(Number.isNaN(valueAt([], 1, 1))); assert.ok(Number.isNaN(valueAt(null, 1, 1)));
   });
   test('phaseFactorAt evolves the phase and folds in the onset chance', () => {
-    assert.deepEqual(phaseFactorAt(null, 30), { factor: 0.55, pOnset: NaN });
-    assert.deepEqual(phaseFactorAt({ phase: 'unknown' }, 30), { factor: 0.55, pOnset: NaN });
+    assert.deepEqual(phaseFactorAt(null, 30), { factor: 0.55, pOnset: NaN, pOnsetSector: NaN });
+    assert.deepEqual(phaseFactorAt({ phase: 'unknown' }, 30), { factor: 0.55, pOnset: NaN, pOnsetSector: NaN });
     const sub = { phase: 'expansion', minutesSinceOnset: 5, ekl: 2, loaded: 0, powerRecent: 1 };
     assert.equal(phaseFactorAt(sub, 5).factor, 1);
     near(phaseFactorAt(sub, 20).factor, 0.75, 0.001, 'recovery 25 min after onset');

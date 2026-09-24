@@ -6,8 +6,8 @@ import { handleApi, corsHeaders, ROUTES } from '../worker/src/proxy.mjs';
 const req = (path, init = {}) => new Request(`https://proxy.test${path}`, init);
 
 describe('route table', () => {
-  test('seven allow-listed routes with ttl, type and attribution', () => {
-    assert.equal(ROUTES.length, 7);
+  test('eight allow-listed routes with ttl, type and attribution', () => {
+    assert.equal(ROUTES.length, 8);
     for (const r of ROUTES) {
       assert.ok(r.match instanceof RegExp); assert.equal(typeof r.upstream, 'function');
       assert.ok(r.ttl > 0); assert.ok(['application/json', 'text/plain'].includes(r.type)); assert.ok(r.attribution.length > 0);
@@ -26,6 +26,10 @@ describe('route table', () => {
     const hpo = ROUTES.find(r => r.match.test('/api/gfz/hpo-forecast'));
     assert.equal(hpo.upstream(null, new URL('https://x/api/gfz/hpo-forecast')), 'https://isdc-data.gfz.de/geomagnetism/HpoForecast/v0102/output/Hpo/json/hpo_forecast_mean_bars_Hp30.json');
     assert.equal(hpo.upstream(null, new URL('https://x/api/gfz/hpo-forecast?model=bogus')), null);
+    const tgo = ROUTES.find(r => r.match.test('/api/tgo/k/tro2a'));
+    assert.equal(tgo.upstream('/api/tgo/k/tro2a'.match(tgo.match)), 'https://flux.phys.uit.no/Kindice/k_tro2a.txt');
+    assert.equal(tgo.upstream(['x', 'sod1a']), null, 'only the listed TGO sites');
+    assert.equal(tgo.match.test('/api/tgo/k/tro2a/extra'), false);
     const ens = ROUTES.find(r => r.match.test('/api/gfz/ensemble'));
     assert.equal(ens.upstream(null, new URL('https://x/api/gfz/ensemble?index=Hp30')), 'https://spaceweather.gfz.de/fileadmin/SW-Monitor/hp30_product_file_FORECAST_HP30_SWIFT_DRIVEN_LAST.json');
     assert.equal(ens.upstream(null, new URL('https://x/api/gfz/ensemble?index=Ap')), null);
@@ -39,7 +43,7 @@ describe('handleApi (offline paths)', () => {
     assert.equal(r.headers.get('content-type'), 'application/json');
     assert.equal(r.headers.get('access-control-allow-origin'), '*');
     const body = await r.json();
-    assert.equal(body.ok, true); assert.equal(body.routes, 7); assert.equal(typeof body.cached, 'number');
+    assert.equal(body.ok, true); assert.equal(body.routes, 8); assert.equal(typeof body.cached, 'number');
     assert.ok(!Number.isNaN(Date.parse(body.time)));
   });
   test('OPTIONS preflight returns 204 with CORS headers', async () => {

@@ -6,29 +6,41 @@ import { iswaHp30, iswaClear, ginMinute } from './data/hapi.mjs';
 import { ProxyClient } from './data/proxied.mjs';
 import { MagneticCoordinates } from './model/magcoords.mjs';
 import { parseOvationText, kpForBoundary, VIEW_ALLOWANCE_DEG } from './model/oval.mjs';
-import { substormState, toMinutes, quietBaseline } from './model/substorm.mjs';
+import { substormState, toMinutes, quietBaseline, substormOutlook, phaseIntervals, onsetMltDensity, ONSET_CLIMATOLOGY } from './model/substorm.mjs';
 import { shortTermForecast } from './model/shortterm.mjs';
 import { weightedRecentAverage } from './model/integrate.mjs';
 import { kpFromDriving } from './model/activity.mjs';
 import { parseGeomagForecast, parseThreeDayForecast, parseDiscussion, parse27Day, parseAlerts, activeGeomagneticMessages, cmeArrivals, enlilEvents, nightCards } from './model/longterm.mjs';
-import { timelineChart, boundaryChart, substormChart, kpForecastChart, enlilChart } from './ui/charts.mjs';
+import { timelineChart, boundaryChart, substormChart, kpForecastChart, enlilChart, electrojetChart, profileChart, onsetClockChart } from './ui/charts.mjs';
 import { polarMap, subsolarPoint } from './ui/map.mjs';
-import { renderVerdict, renderTiles, renderFreshness, renderNights, renderCmes, renderAlerts, renderAgreement, renderDiscussion, renderHorizonTable, renderLegend, renderMethod } from './ui/panels.mjs';
+import { renderVerdict, renderTiles, renderFreshness, renderNights, renderCmes, renderAlerts, renderAgreement, renderDiscussion, renderHorizonTable, renderLegend, renderMethod, renderSubstormPanel } from './ui/panels.mjs';
 import { fmt } from './ui/format.mjs';
 
 const MIN = 60e3, HOUR = 3600e3;
 const cfg = window.AURORA_CONFIG || {};
 const proxy = new ProxyClient(cfg.apiBase === '' ? location.origin : (cfg.apiBase && !cfg.apiBase.includes('PLACEHOLDER') ? cfg.apiBase : null));
+// The Finnish IMAGE chain, 58 to 70 deg N (SOD excluded by licence). Order: north to south.
 const STATIONS = [
-  { code: 'KEV', lat: 69.76, lon: 27.01 }, { code: 'MUO', lat: 68.02, lon: 23.53 }, { code: 'PEL', lat: 66.90, lon: 24.08 },
-  { code: 'OUJ', lat: 64.52, lon: 27.23 }, { code: 'HAN', lat: 62.25, lon: 26.60 }, { code: 'NUR', lat: 60.50, lon: 24.65 },
+  { code: 'KEV', lat: 69.76, lon: 27.01 }, { code: 'MAS', lat: 69.46, lon: 23.70 }, { code: 'KIL', lat: 69.06, lon: 20.77 }, { code: 'IVA', lat: 68.56, lon: 27.29 },
+  { code: 'MUO', lat: 68.02, lon: 23.53 }, { code: 'PEL', lat: 66.90, lon: 24.08 }, { code: 'RAN', lat: 65.90, lon: 26.41 }, { code: 'OUJ', lat: 64.52, lon: 27.23 },
+  { code: 'MEK', lat: 62.77, lon: 30.97 }, { code: 'HAN', lat: 62.25, lon: 26.60 }, { code: 'NUR', lat: 60.50, lon: 24.65 }, { code: 'TAR', lat: 58.26, lon: 26.46 },
 ];
+const CHAIN_MLON = 103.5; // magnetic longitude of the chain's centre (AACGM-v2)
+// Tromsø Geophysical Observatory sites with open 3-hourly K-index files; the nearest one gives a local activity number.
+const TGO_SITES = [
+  { site: 'tro2a', name: 'Tromsø', lat: 69.66, lon: 18.94 }, { site: 'and1a', name: 'Andenes', lat: 69.30, lon: 16.03 }, { site: 'bjn1a', name: 'Bjørnøya', lat: 74.50, lon: 19.20 },
+  { site: 'nal1a', name: 'Ny-Ålesund', lat: 78.92, lon: 11.95 }, { site: 'dob1a', name: 'Dombås', lat: 62.07, lon: 9.11 }, { site: 'bfe6d', name: 'Brorfelde', lat: 55.63, lon: 11.67 }, { site: 'lrv1a', name: 'Leirvogur', lat: 64.18, lon: -21.70 },
+];
+function nearestTgo(lat, lon) {
+  const d = (a) => Math.hypot(a.lat - lat, (a.lon - lon) * Math.cos(lat * Math.PI / 180));
+  return TGO_SITES.reduce((best, s) => (d(s) < d(best) ? s : best), TGO_SITES[0]);
+}
 
 const state = {
   observer: { lat: 55.676, lon: 12.568 }, mag: null, obs: null, coefficients: null,
   propagated: [], ovation: null, ovationGrid: null, kp1m: [], geospaceKp: [], hemi: [], hp30: [], hpo: [], stations: [], rtsw: null,
   kpForecast: [], geomag: null, threeDay: null, discussion: null, outlook: null, alerts: [], scales: null, enlil: null, cmes: [], gfzEnsemble: [], clear: [], metoffice: null, sidc: null, flares: [],
-  meta: {}, sub: null, fc: null,
+  meta: {}, sub: null, fc: null, substormOutlook: null, tgo: null,
 };
 
 async function loadStatic() {
@@ -58,7 +70,7 @@ async function pollFast() {
   if (summary.data) state.rtsw = summary.data;
   if (proxy.available) {
     const now = Date.now();
-    const st = await Promise.all(STATIONS.map(async s => { const r = await proxy.fmiStation(s.code, '24'); return { station: s.code, mlat: state.mag.convert(s.lat, s.lon).mlat, series: r.series, meta: r.meta }; }));
+    const st = await Promise.all(STATIONS.map(async s => { const r = await proxy.fmiStation(s.code, '24'); const c = state.mag.convert(s.lat, s.lon); return { station: s.code, mlat: c.mlat, mlon: c.mlon, series: r.series, meta: r.meta }; }));
     if (st.some(s => s.series && s.series.t.length)) { state.stations = st.filter(s => s.series && s.series.t.length); state.meta.fmi = st.find(s => s.meta.ok)?.meta || st[0].meta; }
   }
 }
@@ -73,7 +85,7 @@ async function pollHp30() {
   } else {
     const r = await iswaHp30(now, 72); state.meta.hp30 = r.meta; if (r.data.length) state.hp30 = r.data.map(x => ({ t: x.t, value: x.hp30 }));
     // browser-only substorm fallback: INTERMAGNET NUR and HRN (CC BY-NC, 4-min lag)
-    const gin = await Promise.all([['nur', 60.5, 24.65], ['hrn', 77.0, 15.55]].map(async ([code, la, lo]) => { const g = await ginMinute(code, now, 24); return { station: code.toUpperCase(), mlat: state.mag.convert(la, lo).mlat, series: g.series, meta: g.meta }; }));
+    const gin = await Promise.all([['nur', 60.5, 24.65], ['hrn', 77.0, 15.55]].map(async ([code, la, lo]) => { const g = await ginMinute(code, now, 24); const c = state.mag.convert(la, lo); return { station: code.toUpperCase(), mlat: c.mlat, mlon: c.mlon, series: g.series, meta: g.meta }; }));
     if (gin.some(s => s.series.t.length)) { state.stations = gin.filter(s => s.series.t.length); state.meta.fmi = gin[0].meta; state.stationSource = 'INTERMAGNET'; }
   }
 }
@@ -101,9 +113,11 @@ async function pollSlow() {
   if (flares.data) state.flares = parseFlares(flares.data);
   const clear = await iswaClear(now).catch(() => ({ data: [] })); state.clear = clear.data || [];
   if (proxy.available) {
-    const [ens, mo, sidc] = await Promise.all([proxy.gfzEnsemble('Kp'), proxy.metOffice(), proxy.sidc()]);
+    const tgoSite = nearestTgo(state.observer.lat, state.observer.lon);
+    const [ens, mo, sidc, tgo] = await Promise.all([proxy.gfzEnsemble('Kp'), proxy.metOffice(), proxy.sidc(), proxy.tgoK(tgoSite.site)]);
     state.meta.gfzEnsemble = ens.meta; if (ens.data.length) state.gfzEnsemble = ens.data;
     state.metoffice = mo.text ? mo : null; state.sidc = sidc.text ? sidc : null;
+    state.tgo = tgo.days && tgo.days.length ? { site: tgoSite.site, name: tgoSite.name, days: tgo.days, meta: tgo.meta } : null;
   }
 }
 
@@ -112,8 +126,15 @@ function compute() {
   const now = Date.now();
   const drive = state.propagated.filter(r => r.t >= now - 6 * HOUR).map(r => ({ t: r.t, power: r.power, ekl: r.ekl, bz: r.bz }));
   state.sub = state.stations.length ? substormState(state.stations, drive, now) : null;
+  // activity level for the onset-latitude climatology: the freshest observed index, else the driving
+  const hpLast = state.hp30.length ? state.hp30[state.hp30.length - 1] : null, kpLast = state.kp1m.length ? state.kp1m[state.kp1m.length - 1] : null;
+  let kpLevel = hpLast && now - (hpLast.t + 30 * MIN) < 45 * MIN ? hpLast.value : kpLast && now - kpLast.t < 30 * MIN ? kpLast.kp : NaN;
+  if (!Number.isFinite(kpLevel)) kpLevel = kpFromDriving(weightedRecentAverage(state.propagated, now, 'coupling', { minHours: 2 }).value, weightedRecentAverage(state.propagated, now, 'viscous', { minHours: 1 }).value);
+  const arrived = state.propagated.filter(r => r.t <= now && r.t >= now - HOUR && Number.isFinite(r.coupling));
+  const couplingRecent = arrived.length ? arrived.reduce((s, r) => s + r.coupling, 0) / arrived.length : NaN;
+  state.substormOutlook = state.obs ? substormOutlook({ sub: state.sub, observer: state.obs, mag: state.mag, now, kp: kpLevel, ovation: state.ovation, couplingRecent, chainMlon: CHAIN_MLON }) : null;
   state.fc = shortTermForecast({ now, propagated: state.propagated, ovation: state.ovation, kp1m: state.kp1m, geospaceKp: state.geospaceKp, hp30: state.hp30, hpoForecast: state.hpo,
-    observer: state.obs, mag: state.mag, substorm: state.sub, coefficients: state.coefficients });
+    observer: state.obs, mag: state.mag, substorm: state.sub, coefficients: state.coefficients, outlook: state.substormOutlook });
 }
 
 function renderShort() {
@@ -141,18 +162,42 @@ function renderShort() {
     ]);
     boundaryChart(document.getElementById('boundary-chart'), fc.horizons, state.obs.mlat, VIEW_ALLOWANCE_DEG);
   }
-  // substorm
-  const subBox = document.getElementById('substorm-chart'), subNote = document.getElementById('substorm-note');
-  if (state.sub && state.sub.stations.length) {
-    const rows = state.stations.map(s => { const minute = toMinutes(s.series); const base = quietBaseline(minute.x); const st = state.sub.stations.find(x => x.station === s.station); return { station: s.station, mlat: s.mlat, minutes: { t: minute.t, dev: minute.x.map(v => v - base) }, onsets: st ? st.onsets : [] }; });
-    substormChart(subBox, rows, now, state.sub.lastOnset?.t);
-    subNote.textContent = `Phase: ${state.sub.phase}. ${state.sub.lastOnset ? `Last onset ${fmt.hm(state.sub.lastOnset.t)} UTC at ${state.sub.lastOnset.stations.join(', ')}.` : 'No onset in the last day.'} Merging field ${fmt.num(state.sub.ekl, 2)} mV/m, Bz southward for ${state.sub.minutesSouthward} min. Chance of a new onset: ${fmt.pct(state.sub.pOnset30)} in 30 min, ${fmt.pct(state.sub.pOnset60)} in 60 min.${state.stationSource === 'INTERMAGNET' ? ' Source: INTERMAGNET (proxy unavailable).' : ''}`;
-  } else { subBox.replaceChildren(); subNote.textContent = proxy.available ? 'Magnetometer data not available yet.' : 'No proxy configured: magnetometer feeds need the Worker (or INTERMAGNET fallback).'; }
   // map
   if (state.ovationGrid) {
     polarMap(document.getElementById('map-chart'), state.ovationGrid, state.observer, subsolarPoint(new Date(now)));
     document.getElementById('map-note').textContent = `Forecast for ${fmt.hm(Date.parse(state.ovationGrid['Forecast Time']))} UTC from observations at ${fmt.hm(Date.parse(state.ovationGrid['Observation Time']))} UTC. Hemispheric power ${fmt.int(state.ovation?.hemisphericPower)} GW.`;
   }
+}
+
+function placeName() {
+  const sel = document.getElementById('place'); const opt = sel.selectedOptions && sel.selectedOptions[0];
+  return opt && opt.value !== 'custom' ? opt.textContent.replace(/^Lapland: /, '') : 'you';
+}
+
+function renderSubstorms() {
+  const now = Date.now(); const sub = state.sub, out = state.substormOutlook;
+  renderSubstormPanel({ outlook: out, sub, obs: state.obs, now, thresholds: state.thresholds, stationSource: state.stationSource === 'INTERMAGNET' ? 'INTERMAGNET' : 'FMI IMAGE', tgo: state.tgo, proxyAvailable: proxy.available });
+  const ejBox = document.getElementById('electrojet-chart'), profBox = document.getElementById('profile-chart');
+  if (sub?.chain) {
+    // the station nearest the observer's magnetic latitude, for the dashed local trace
+    const nearest = sub.chain.deviations.reduce((a, b) => (Math.abs(b.mlat - state.obs.mlat) < Math.abs(a.mlat - state.obs.mlat) ? b : a));
+    electrojetChart(ejBox, { index: sub.chain.index, onsets: sub.onsets, phases: phaseIntervals(sub.onsets, now), now, xMin: now - 12 * HOUR, xMax: now + 30 * MIN,
+      local: nearest ? { t: nearest.t, dx: nearest.dx } : null, localLabel: nearest ? `${nearest.station} (nearest to you)` : '', baseline: sub.chain.baseline });
+    renderLegend('electrojet-legend', [{ label: 'IL: strongest westward current in the chain', color: 'var(--s1)' }, { label: 'IU: strongest eastward current', color: 'var(--muted)' }, { label: `X at ${nearest ? nearest.station : 'nearest station'}`, color: 'var(--s3)', kind: 'dash' }, { label: 'onset (dashed = provisional)', color: 'var(--s2)' }, { label: 'expansion', color: 'var(--s2)', kind: 'area' }, { label: 'recovery', color: 'var(--s4)', kind: 'area' }, { label: 'quiet baseline window', color: 'var(--s3)' }]);
+    profileChart(profBox, { profile: sub.chain.profile, observerMlat: state.obs.mlat, oval: out?.oval, onsetMlat: out?.onsetMlat, centre: sub.chain.centre, observerLabel: placeName() });
+  } else { ejBox.replaceChildren(); profBox.replaceChildren(); renderLegend('electrojet-legend', []); }
+  const clockBox = document.getElementById('onset-clock-chart'), clockNote = document.getElementById('onset-clock-note');
+  if (out && state.obs) {
+    const tMin = now - 2 * HOUR, tMax = now + 22 * HOUR, curve = [];
+    for (let t = tMin; t <= tMax; t += 10 * MIN) curve.push({ t, density: onsetMltDensity(state.mag.mlt(state.obs.mlon, new Date(t))) });
+    onsetClockChart(clockBox, { curve, now, prime: out.prime, tMin, tMax });
+    clockNote.textContent = `Breakups cluster around ${ONSET_CLIMATOLOGY.mltMean} h magnetic local time; you are at ${out.mltNow.toFixed(1)} h MLT now. ${out.prime ? `Prime window ${fmt.hm(out.prime.start)}–${fmt.hm(out.prime.end)} UTC (${fmt.hmLocal(out.prime.start)}–${fmt.hmLocal(out.prime.end)} local).` : ''} Daylight and clouds are ignored.`;
+  } else { clockBox.replaceChildren(); clockNote.textContent = ''; }
+  const subBox = document.getElementById('substorm-chart');
+  if (sub && sub.stations.length) {
+    const rows = state.stations.filter(s => s.series && s.series.t.length >= 30).map(s => { const minute = toMinutes(s.series); const base = quietBaseline(minute.x); const st = sub.stations.find(x => x.station === s.station); return { station: s.station, mlat: s.mlat, minutes: { t: minute.t, dev: minute.x.map(v => v - base) }, onsets: st ? st.onsets : [] }; }).sort((a, b) => b.mlat - a.mlat);
+    substormChart(subBox, rows, now, sub.lastOnset?.t);
+  } else subBox.replaceChildren();
 }
 
 function renderLong() {
@@ -196,14 +241,21 @@ function renderFreshnessStrip() {
   renderFreshness(items.filter(i => !i.hide).map(i => { const f = freshness(i.t, i.exp, now); return { label: i.label, ageMin: f.age, level: f.level, title: Number.isFinite(i.t) ? new Date(i.t).toISOString() : 'no data' }; }));
 }
 
-function renderAll() { try { compute(); renderShort(); } catch (e) { console.error(e); renderVerdict({ ok: false, reason: String(e.message || e) }); } try { renderLong(); } catch (e) { console.error(e); } renderFreshnessStrip(); }
+function renderAll() {
+  try { compute(); renderShort(); } catch (e) { console.error(e.stack || e); renderVerdict({ ok: false, reason: String(e.message || e) }); }
+  try { renderSubstorms(); } catch (e) { console.error(e.stack || e); }
+  try { renderLong(); } catch (e) { console.error(e.stack || e); }
+  renderFreshnessStrip();
+}
 
 // ---------------------------------------------------------------- boot
 async function boot() {
   renderMethod();
   await loadStatic();
   let saved = null; try { saved = JSON.parse(localStorage.getItem('aurora.observer') || 'null'); } catch {}
-  const init = saved && Number.isFinite(saved.lat) ? saved : { lat: 55.676, lon: 12.568 };
+  // ?lat=69.649&lon=18.956 in the URL selects a place for this load (shareable links); otherwise the remembered one.
+  const q = new URLSearchParams(location.search); const qLat = parseFloat(q.get('lat')), qLon = parseFloat(q.get('lon'));
+  const init = Number.isFinite(qLat) && Number.isFinite(qLon) && Math.abs(qLat) <= 90 && Math.abs(qLon) <= 180 ? { lat: qLat, lon: qLon } : saved && Number.isFinite(saved.lat) ? saved : { lat: 55.676, lon: 12.568 };
   setObserver(init.lat, init.lon); syncLocationForm();
   const seven = await load.propagated(URLS.propagated7d); state.meta.propagated7 = seven.meta; state.propagated = seven.data;
   await Promise.all([pollFast(), pollOvation(), pollHp30(), pollSlow()]);

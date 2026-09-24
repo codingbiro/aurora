@@ -12,7 +12,7 @@ export const DEFAULT_HORIZONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 1
  *          mag (MagneticCoordinates), substorm, coefficients, horizons}
  */
 export function shortTermForecast(inputs) {
-  const { now, propagated = [], ovation = null, geospaceKp = [], hpoForecast = [], observer, mag, substorm = null, coefficients = null } = inputs;
+  const { now, propagated = [], ovation = null, geospaceKp = [], hpoForecast = [], observer, mag, substorm = null, coefficients = null, outlook = null } = inputs;
   const horizons = inputs.horizons || DEFAULT_HORIZONS;
   const known = propagated.filter(r => Number.isFinite(r.coupling));
   if (known.length < 60) return { ok: false, reason: 'not enough propagated solar wind data' };
@@ -112,7 +112,7 @@ export function shortTermForecast(inputs) {
     const pOverhead = margins.filter(m => m <= 0).length / margins.length;
 
     // Substorm phase evolution and onset chance over the horizon.
-    const factor = phaseFactorAt(substorm, h);
+    const factor = phaseFactorAt(substorm, h, outlook);
     rows.push({
       h, t: T, mlt, leadCovered: T <= tLast,
       coupling: { median: quantile(couplingMembers, 0.5), p10: quantile(couplingMembers, 0.1), p90: quantile(couplingMembers, 0.9) },
@@ -121,7 +121,7 @@ export function shortTermForecast(inputs) {
       hp30: { median: quantile(hpMembers, 0.5) + shift },
       boundary: { median: quantile(boundaries, 0.5), p10: quantile(boundaries, 0.1), p90: quantile(boundaries, 0.9), ovation: ovBoundary ? ovBoundary.mlat : null, ovationAtEdge: !!ovBoundary?.atEdge },
       margin: quantile(margins, 0.5), visibility: visibilityClass(quantile(margins, 0.5)),
-      pHorizon, pOverhead, phaseFactor: factor.factor, pOnset: factor.pOnset,
+      pHorizon, pOverhead, phaseFactor: factor.factor, pOnset: factor.pOnset, pOnsetSector: factor.pOnsetSector,
       pVisible: Math.min(1, pHorizon * factor.factor), pVisibleOverhead: Math.min(1, pOverhead * factor.factor),
     });
   }
@@ -137,7 +137,7 @@ export function shortTermForecast(inputs) {
       phase: substorm?.phase || 'unknown' },
     horizons: rows,
     ensemble: { times: futureTimes, central: ens.central, quantiles: ens.quantiles, members: members.length, analog: ens.members.length, climatology: clim.length }, anchor,
-    verdict: verdict(rows, marginNow, substorm, ovFaint, mltNow),
+    verdict: verdict(rows, marginNow, substorm, ovFaint, mltNow, outlook),
   };
 }
 
@@ -160,19 +160,25 @@ export function valueAt(series, T, tolMs) {
  * after 15 min -> quiet after 45 min) and a new onset may occur with probability pOnset(h),
  * which resets the factor to the expansion value.
  */
-export function phaseFactorAt(substorm, h) {
-  if (!substorm || !substorm.phase || substorm.phase === 'unknown') return { factor: 0.55, pOnset: NaN }; // no magnetometer: climatological middle
+export function phaseFactorAt(substorm, h, outlook = null) {
+  if (!substorm || !substorm.phase || substorm.phase === 'unknown') return { factor: 0.55, pOnset: NaN, pOnsetSector: NaN }; // no magnetometer: climatological middle
   const since = (Number.isFinite(substorm.minutesSinceOnset) ? substorm.minutesSinceOnset : 1e6) + h;
-  let base;
-  if (since <= 15) base = PHASE_FACTOR.expansion;
-  else if (since <= 45) base = PHASE_FACTOR.recovery;
+  let base, ongoing = false;
+  if (since <= 15) { base = PHASE_FACTOR.expansion; ongoing = true; }
+  else if (since <= 45) { base = PHASE_FACTOR.recovery; ongoing = true; }
+  else if ((substorm.phase === 'expansion' || substorm.phase === 'recovery') && h <= 30) { base = PHASE_FACTOR[substorm.phase]; ongoing = true; } // long-lived activity seen in the index
   else base = substorm.phase === 'growth' || (substorm.ekl >= 0.6) ? PHASE_FACTOR.growth : PHASE_FACTOR.quiet;
+  // An ongoing substorm at the chain counts only in so far as the observer's local-time sector is the active one.
+  const chainReach = outlook && Number.isFinite(outlook.chainReachMlt) ? outlook.chainReachMlt : 1;
+  if (ongoing) base = PHASE_FACTOR.quiet + (base - PHASE_FACTOR.quiet) * chainReach;
   const pOn = onsetProbability(substorm.loaded, substorm.powerRecent, substorm.powerRecent, h, { ekl: substorm.ekl });
-  const p = Number.isFinite(pOn) ? pOn : 0;
-  return { factor: (1 - p) * base + p * PHASE_FACTOR.expansion, pOnset: pOn };
+  const row = outlook?.horizons?.find(r => r.h === h);
+  const reach = row && Number.isFinite(row.reachMlt) ? row.reachMlt : 1;
+  const p = Number.isFinite(pOn) ? pOn * reach : 0;
+  return { factor: (1 - p) * base + p * PHASE_FACTOR.expansion, pOnset: pOn, pOnsetSector: Number.isFinite(pOn) ? p : NaN };
 }
 
-function verdict(rows, marginNow, substorm, ovFaint, mltNow) {
+function verdict(rows, marginNow, substorm, ovFaint, mltNow, outlook = null) {
   const at = (h) => rows.find(r => r.h === h) || rows[rows.length - 1];
   const r30 = at(30), r60 = at(60), r120 = at(120);
   const best = rows.reduce((a, b) => (b.pVisible > a.pVisible ? b : a), rows[0]);
@@ -185,6 +191,7 @@ function verdict(rows, marginNow, substorm, ovFaint, mltNow) {
   const geometry = Number.isFinite(marginNow)
     ? (marginNow <= 0 ? 'The modeled oval already reaches overhead.' : marginNow <= VIEW_ALLOWANCE_DEG ? `Oval edge ${marginNow.toFixed(1)} deg north of you: low on the northern horizon.` : `Oval edge ${marginNow.toFixed(1)} deg north of you, out of view.`)
     : Number.isFinite(ovFaint) ? `OVATION shows only faint aurora at your local time (${mltNow.toFixed(1)} h MLT, peak ${ovFaint.toFixed(2)} erg cm⁻² s⁻¹).` : 'Oval position unknown.';
-  const phase = substorm?.phase ? `Substorm phase: ${substorm.phase}.` : 'No magnetometer data for substorm phase.';
-  return { headline, tone, detail: `${geometry} ${phase}`, p30: r30?.pVisible, p60: r60?.pVisible, p120: r120?.pVisible, bestH: best.h };
+  const phase = substorm?.phase ? `Substorm phase: ${substorm.phase}${Number.isFinite(substorm.ilNow) ? ` (IL ${substorm.ilNow.toFixed(0)} nT)` : ''}.` : 'No magnetometer data for substorm phase.';
+  const zone = outlook && outlook.regime === 'auroral' && outlook.headline ? ` ${outlook.headline}: see the substorm section.` : '';
+  return { headline, tone, detail: `${geometry} ${phase}${zone}`, p30: r30?.pVisible, p60: r60?.pVisible, p120: r120?.pVisible, bestH: best.h };
 }

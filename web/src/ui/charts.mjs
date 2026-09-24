@@ -174,7 +174,7 @@ export function boundaryChart(container, horizons, observerMlat, allowance = 8) 
 /** Substorm small multiples: stations [{station, mlat, minutes:{t, dev}, onsets}], now. */
 export function substormChart(container, stations, now, lastOnset) {
   const width = Math.max(container.clientWidth || 360, 300);
-  const rowH = 44, m = { top: 6, right: 10, bottom: 24, left: 40 };
+  const rowH = stations.length > 8 ? 30 : 44, m = { top: 6, right: 10, bottom: 24, left: 40 };
   const height = m.top + stations.length * rowH + m.bottom;
   const svg = svgIn(container, width, height);
   const x = d3.scaleUtc().domain([now - 6 * HOUR, now]).range([m.left, width - m.right]);
@@ -187,7 +187,7 @@ export function substormChart(container, stations, now, lastOnset) {
     g.append('path').datum(pts).attr('fill', 'none').attr('stroke', css('--s1')).attr('stroke-width', 1.5).attr('d', d3.line().x(p => x(p.t)).y(p => y(p.v)).defined(p => Number.isFinite(p.v)));
     g.selectAll(null).data(s.onsets.filter(t => t >= now - 6 * HOUR)).enter().append('line').attr('x1', t => x(t)).attr('x2', t => x(t)).attr('y1', 2).attr('y2', rowH - 2).attr('stroke', css('--s2')).attr('stroke-width', 2);
     g.append('text').attr('x', 2).attr('y', 12).attr('font-size', 10).attr('fill', css('--ink')).text(s.station);
-    g.append('text').attr('x', 2).attr('y', 24).attr('font-size', 9).attr('fill', css('--muted')).text(`${s.mlat.toFixed(0)}°`);
+    g.append('text').attr('x', 2).attr('y', rowH > 36 ? 24 : 22).attr('font-size', 9).attr('fill', css('--muted')).text(`${s.mlat.toFixed(0)}°`);
   });
   if (lastOnset) svg.append('line').attr('x1', x(lastOnset)).attr('x2', x(lastOnset)).attr('y1', m.top).attr('y2', height - m.bottom).attr('stroke', css('--s2')).attr('stroke-dasharray', '3 3');
   timeAxis(svg.append('g').attr('transform', `translate(0,${height - m.bottom + 2})`), x, height);
@@ -260,4 +260,110 @@ export function enlilChart(container, rows, events, now) {
     .on('pointermove', (ev) => { const [px, py] = d3.pointer(ev, svg.node()); const r = R[bis(R, x.invert(px).getTime())]; if (!r) return;
       tip.show(px * (container.clientWidth / width), py * (container.clientWidth / width), `<div class="t">${fmt.dateUtc(r.t)}</div><table><tr><td>speed</td><td class="v">${fmt.int(r.v)} km/s</td></tr><tr><td>density</td><td class="v">${fmt.num(r.n, 1)} /cm³</td></tr><tr><td>CME tracer</td><td class="v">${fmt.num(r.cloud, 2)}</td></tr></table>`); })
     .on('pointerleave', () => tip.hide());
+}
+
+/**
+ * Chain electrojet index: {index:{t, il, iu, ilStation}, onsets:[{t, status}], phases:[{start, end, kind}],
+ * now, xMin, xMax, local:{t, dx}|null, localLabel, baseline:{t0, t1}|null}
+ */
+export function electrojetChart(container, d) {
+  const width = Math.max(container.clientWidth || 720, 480), height = 190;
+  const m = { top: 14, right: 14, bottom: 26, left: 46 };
+  const svg = svgIn(container, width, height);
+  const x = d3.scaleUtc().domain([d.xMin, d.xMax]).range([m.left, width - m.right]);
+  const pts = d.index.t.map((t, i) => ({ t, il: d.index.il[i], iu: d.index.iu[i], st: d.index.ilStation[i] })).filter(p => p.t >= d.xMin && p.t <= d.xMax);
+  const lo = Math.min(-100, d3.min(pts, p => p.il) || -100), hi = Math.max(50, d3.max(pts, p => p.iu) || 50);
+  const y = d3.scaleLinear().domain([lo * 1.05, hi * 1.05]).nice().range([height - m.bottom, m.top]);
+  for (const ph of d.phases || []) {
+    const x0 = x(Math.max(ph.start, d.xMin)), x1 = x(Math.min(ph.end, d.xMax));
+    if (x1 > x0) svg.append('rect').attr('x', x0).attr('width', x1 - x0).attr('y', m.top).attr('height', height - m.top - m.bottom).attr('fill', ph.kind === 'expansion' ? css('--s2') : css('--s4')).attr('opacity', ph.kind === 'expansion' ? 0.16 : 0.1);
+  }
+  if (d.baseline && Number.isFinite(d.baseline.t0)) {
+    const x0 = x(Math.max(d.baseline.t0, d.xMin)), x1 = x(Math.min(d.baseline.t1, d.xMax));
+    if (x1 > x0) svg.append('rect').attr('x', x0).attr('width', x1 - x0).attr('y', height - m.bottom - 4).attr('height', 4).attr('fill', css('--s3')).attr('opacity', 0.6);
+  }
+  svg.append('g').attr('class', 'grid').attr('transform', `translate(${m.left},0)`).call(d3.axisLeft(y).ticks(5).tickSize(-(width - m.left - m.right)).tickFormat('')).selectAll('line').attr('stroke', css('--grid'));
+  svg.append('line').attr('x1', m.left).attr('x2', width - m.right).attr('y1', y(0)).attr('y2', y(0)).attr('stroke', css('--axis'));
+  for (const [v, label] of [[-170, 'moderate'], [-300, 'strong']]) if (v > y.domain()[0]) {
+    svg.append('line').attr('x1', m.left).attr('x2', width - m.right).attr('y1', y(v)).attr('y2', y(v)).attr('stroke', css('--axis')).attr('stroke-dasharray', '2 4');
+    svg.append('text').attr('x', width - m.right - 2).attr('y', y(v) - 3).attr('text-anchor', 'end').attr('font-size', 9).attr('fill', css('--muted')).text(label);
+  }
+  svg.append('path').datum(pts).attr('fill', 'none').attr('stroke', css('--muted')).attr('stroke-width', 1.2).attr('d', d3.line().x(p => x(p.t)).y(p => y(p.iu)).defined(p => Number.isFinite(p.iu)));
+  if (d.local && d.local.t.length) {
+    const L = d.local.t.map((t, i) => ({ t, v: d.local.dx[i] })).filter(p => p.t >= d.xMin && p.t <= d.xMax);
+    svg.append('path').datum(L).attr('fill', 'none').attr('stroke', css('--s3')).attr('stroke-width', 1.5).attr('stroke-dasharray', '4 3').attr('d', d3.line().x(p => x(p.t)).y(p => y(Math.max(p.v, y.domain()[0]))).defined(p => Number.isFinite(p.v)));
+  }
+  svg.append('path').datum(pts).attr('fill', 'none').attr('stroke', css('--s1')).attr('stroke-width', 2).attr('d', d3.line().x(p => x(p.t)).y(p => y(p.il)).defined(p => Number.isFinite(p.il)));
+  for (const o of d.onsets || []) {
+    if (o.t < d.xMin || o.t > d.xMax) continue;
+    svg.append('line').attr('x1', x(o.t)).attr('x2', x(o.t)).attr('y1', m.top).attr('y2', height - m.bottom).attr('stroke', css('--s2')).attr('stroke-width', 2).attr('stroke-dasharray', o.status === 'provisional' ? '4 3' : null);
+    svg.append('text').attr('x', x(o.t) + 3).attr('y', m.top + 9).attr('font-size', 9).attr('fill', css('--ink')).text(`${fmt.hm(o.t)}${o.status === 'provisional' ? '?' : ''}`);
+  }
+  if (Number.isFinite(d.now)) svg.append('line').attr('x1', x(d.now)).attr('x2', x(d.now)).attr('y1', m.top).attr('y2', height - m.bottom + 4).attr('stroke', css('--ink')).attr('stroke-width', 1.5).attr('opacity', 0.6);
+  svg.append('g').attr('class', 'axis').attr('transform', `translate(0,${height - m.bottom})`).call(d3.axisBottom(x).ticks(d3.utcHour.every(2)).tickFormat(d3.utcFormat('%H:%M')).tickSizeOuter(0)).selectAll('text').attr('fill', css('--ink-2'));
+  svg.append('g').attr('class', 'axis').attr('transform', `translate(${m.left},0)`).call(d3.axisLeft(y).ticks(5).tickFormat(v => `${v}`).tickSizeOuter(0)).selectAll('text').attr('fill', css('--ink-2'));
+  svg.append('text').attr('x', m.left + 4).attr('y', m.top + 9).attr('font-size', 10).attr('fill', css('--ink-2')).text('nT');
+  const tip = tooltip(container);
+  const bis = d3.bisector(p => p.t).center;
+  const overlay = svg.append('rect').attr('x', m.left).attr('y', m.top).attr('width', width - m.left - m.right).attr('height', height - m.top - m.bottom).attr('fill', 'transparent');
+  overlay.on('pointermove', (ev) => {
+    const [px, py] = d3.pointer(ev, svg.node()); const t = x.invert(px).getTime(); const p = pts[bis(pts, t)];
+    if (!p || Math.abs(p.t - t) > 5 * MIN) { tip.hide(); return; }
+    const L = d.local ? d.local.dx[d.local.t.indexOf(p.t)] : NaN;
+    tip.show(px * (container.clientWidth / width), py * (container.clientWidth / width), `<div class="t">${fmt.dateUtc(p.t)}</div><table><tr><td>IL</td><td class="v">${fmt.int(p.il)} nT</td><td>${p.st || ''}</td></tr><tr><td>IU</td><td class="v">${fmt.int(p.iu)} nT</td></tr>${Number.isFinite(L) ? `<tr><td>${d.localLabel || 'at you'}</td><td class="v">${fmt.int(L)} nT</td></tr>` : ''}</table>`);
+  }).on('pointerleave', () => tip.hide());
+}
+
+/**
+ * Latitude profile of the chain right now: {profile:[{station, mlat, dx, dz}], observerMlat, oval:{equatorward, poleward, peakMlat}|null,
+ * onsetMlat, centre:{mlat, beyond}|null, observerLabel}
+ */
+export function profileChart(container, d) {
+  const width = Math.max(container.clientWidth || 360, 280);
+  const m = { top: 10, right: 14, bottom: 26, left: 44 }, height = 230;
+  const svg = svgIn(container, width, height);
+  const lats = [...d.profile.map(r => r.mlat), d.observerMlat, d.onsetMlat, d.oval ? d.oval.equatorward : NaN, d.oval ? d.oval.poleward : NaN].filter(Number.isFinite);
+  const y = d3.scaleLinear().domain([Math.floor(Math.min(...lats) - 1), Math.ceil(Math.max(...lats) + 1)]).range([height - m.bottom, m.top]);
+  const ext = Math.max(100, d3.max(d.profile, r => Math.abs(r.dx)) || 100);
+  const x = d3.scaleLinear().domain([-ext * 1.1, Math.max(ext * 0.3, 50)]).range([m.left, width - m.right]);
+  if (d.oval && Number.isFinite(d.oval.equatorward)) {
+    svg.append('rect').attr('x', m.left).attr('width', width - m.left - m.right).attr('y', y(d.oval.poleward)).attr('height', Math.max(0, y(d.oval.equatorward) - y(d.oval.poleward))).attr('fill', css('--aurora-1')).attr('opacity', 0.5);
+    if (Number.isFinite(d.oval.peakMlat)) svg.append('line').attr('x1', m.left).attr('x2', width - m.right).attr('y1', y(d.oval.peakMlat)).attr('y2', y(d.oval.peakMlat)).attr('stroke', css('--aurora-4')).attr('stroke-dasharray', '2 3');
+  }
+  svg.append('line').attr('x1', x(0)).attr('x2', x(0)).attr('y1', m.top).attr('y2', height - m.bottom).attr('stroke', css('--axis'));
+  const bh = Math.max(4, Math.min(12, (height - m.top - m.bottom) / Math.max(1, d.profile.length) * 0.5));
+  svg.selectAll(null).data(d.profile).enter().append('rect').attr('x', r => Math.min(x(0), x(r.dx))).attr('width', r => Math.abs(x(r.dx) - x(0))).attr('y', r => y(r.mlat) - bh / 2).attr('height', bh).attr('fill', r => (r.dx < 0 ? css('--s1') : css('--s4'))).attr('opacity', 0.85);
+  svg.selectAll(null).data(d.profile).enter().append('text').attr('x', r => (r.dx < 0 ? x(0) + 4 : x(0) - 4)).attr('text-anchor', r => (r.dx < 0 ? 'start' : 'end')).attr('y', r => y(r.mlat) + 3).attr('font-size', 9).attr('fill', css('--ink-2')).text(r => `${r.station} ${fmt.int(r.dx)}`);
+  if (d.centre && Number.isFinite(d.centre.mlat)) {
+    svg.append('line').attr('x1', m.left).attr('x2', width - m.right).attr('y1', y(d.centre.mlat)).attr('y2', y(d.centre.mlat)).attr('stroke', css('--s2')).attr('stroke-width', 1.5).attr('stroke-dasharray', d.centre.beyond ? '3 3' : null);
+    svg.append('text').attr('x', width - m.right - 2).attr('y', y(d.centre.mlat) - 3).attr('text-anchor', 'end').attr('font-size', 9).attr('fill', css('--s2')).text(d.centre.beyond ? `electrojet beyond chain (${d.centre.beyond})` : `electrojet ${d.centre.mlat.toFixed(1)}°`);
+  }
+  if (Number.isFinite(d.onsetMlat)) {
+    svg.append('line').attr('x1', width - m.right - 40).attr('x2', width - m.right).attr('y1', y(d.onsetMlat)).attr('y2', y(d.onsetMlat)).attr('stroke', css('--s7')).attr('stroke-width', 2);
+    svg.append('text').attr('x', width - m.right - 42).attr('y', y(d.onsetMlat) + 3).attr('text-anchor', 'end').attr('font-size', 9).attr('fill', css('--s7')).text('expected onset arc');
+  }
+  svg.append('line').attr('x1', m.left).attr('x2', width - m.right).attr('y1', y(d.observerMlat)).attr('y2', y(d.observerMlat)).attr('stroke', css('--ink')).attr('stroke-width', 1.5);
+  svg.append('text').attr('x', m.left + 3).attr('y', y(d.observerMlat) - 4).attr('font-size', 10).attr('fill', css('--ink')).text(`${d.observerLabel || 'you'}: ${d.observerMlat.toFixed(1)}°`);
+  svg.append('g').attr('class', 'axis').attr('transform', `translate(0,${height - m.bottom})`).call(d3.axisBottom(x).ticks(5).tickFormat(v => `${v}`).tickSizeOuter(0)).selectAll('text').attr('fill', css('--ink-2'));
+  svg.append('g').attr('class', 'axis').attr('transform', `translate(${m.left},0)`).call(d3.axisLeft(y).ticks(6).tickFormat(v => `${v}°`).tickSizeOuter(0)).selectAll('text').attr('fill', css('--ink-2'));
+  svg.append('text').attr('x', width - m.right).attr('y', height - 4).attr('text-anchor', 'end').attr('font-size', 9).attr('fill', css('--muted')).text('X deviation, nT (negative = westward electrojet overhead)');
+}
+
+/**
+ * When onsets happen at the observer's longitude: {curve:[{t, density}], now, prime:{start,end,peak}|null, tMin, tMax, night:[{start,end}]}
+ */
+export function onsetClockChart(container, d) {
+  const width = Math.max(container.clientWidth || 360, 280), height = 120;
+  const m = { top: 8, right: 12, bottom: 24, left: 12 };
+  const svg = svgIn(container, width, height);
+  const x = d3.scaleUtc().domain([d.tMin, d.tMax]).range([m.left, width - m.right]);
+  const y = d3.scaleLinear().domain([0, d3.max(d.curve, p => p.density) || 1]).range([height - m.bottom, m.top + 8]);
+  for (const n of d.night || []) svg.append('rect').attr('x', x(Math.max(n.start, d.tMin))).attr('width', Math.max(0, x(Math.min(n.end, d.tMax)) - x(Math.max(n.start, d.tMin)))).attr('y', m.top).attr('height', height - m.top - m.bottom).attr('fill', css('--shade-night'));
+  if (d.prime) svg.append('rect').attr('x', x(Math.max(d.prime.start, d.tMin))).attr('width', Math.max(0, x(Math.min(d.prime.end, d.tMax)) - x(Math.max(d.prime.start, d.tMin)))).attr('y', m.top).attr('height', height - m.top - m.bottom).attr('fill', css('--s7')).attr('opacity', 0.12);
+  svg.append('path').datum(d.curve).attr('fill', css('--s7')).attr('opacity', 0.35).attr('d', d3.area().x(p => x(p.t)).y0(height - m.bottom).y1(p => y(p.density)));
+  svg.append('path').datum(d.curve).attr('fill', 'none').attr('stroke', css('--s7')).attr('stroke-width', 1.5).attr('d', d3.line().x(p => x(p.t)).y(p => y(p.density)));
+  if (d.prime && Number.isFinite(d.prime.peak)) { svg.append('line').attr('x1', x(d.prime.peak)).attr('x2', x(d.prime.peak)).attr('y1', m.top).attr('y2', height - m.bottom).attr('stroke', css('--s7')).attr('stroke-dasharray', '3 3'); svg.append('text').attr('x', x(d.prime.peak) + 3).attr('y', m.top + 9).attr('font-size', 9).attr('fill', css('--ink-2')).text(`peak ${fmt.hm(d.prime.peak)}Z`); }
+  svg.append('line').attr('x1', x(d.now)).attr('x2', x(d.now)).attr('y1', m.top).attr('y2', height - m.bottom + 4).attr('stroke', css('--ink')).attr('stroke-width', 1.5).attr('opacity', 0.6);
+  svg.append('text').attr('x', x(d.now) + 3).attr('y', height - m.bottom - 3).attr('font-size', 9).attr('fill', css('--ink-2')).text('now');
+  svg.append('g').attr('class', 'axis').attr('transform', `translate(0,${height - m.bottom})`).call(d3.axisBottom(x).ticks(d3.utcHour.every(3)).tickFormat(d3.utcFormat('%H:%M')).tickSizeOuter(0)).selectAll('text').attr('fill', css('--ink-2'));
 }

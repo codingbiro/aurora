@@ -85,7 +85,7 @@ input[type="number"] { width: 5.5em; font-family: var(--mono); }
 
 /* layout */
 .grid { max-width: 1400px; margin: 0 auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
-@media (min-width: 1100px) { .grid { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); align-items: start; } }
+@media (min-width: 1100px) { .grid { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); align-items: start; } .panel.substorms { grid-column: 1 / -1; } }
 .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px; display: grid; gap: 16px; min-width: 0; }
 .panel-head { display: grid; gap: 4px; }
 .panel-sub { color: var(--ink-2); max-width: 65ch; }
@@ -102,6 +102,9 @@ input[type="number"] { width: 5.5em; font-family: var(--mono); }
 .tile.overhead { --tile-bar: var(--aurora-4); }
 .tile.horizon { --tile-bar: var(--aurora-2); }
 .tile.none { --tile-bar: var(--surface-3); }
+.substorm-verdict { background: var(--surface-2); }
+.verdict-badge.info { background: var(--s7); color: #fff; }
+.substorms .tiles { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
 
 /* charts */
 .chart { margin: 0; display: grid; gap: 6px; min-width: 0; }

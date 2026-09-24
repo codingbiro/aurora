@@ -63,6 +63,12 @@ export class ProxyClient {
     return { meta: m, series: m.ok ? parseIaga2002(m.body) : null };
   }
 
+  /** Tromsø Geophysical Observatory provisional K-indices (7 days, 3-hourly) -> {meta, days:[{date, k:[8]}]} */
+  async tgoK(site = 'tro2a') {
+    const m = await fetchWithMeta(this.url(`/api/tgo/k/${site}`), { as: 'text' });
+    return { meta: m, ...(m.ok ? parseTgoK(m.body) : { name: null, days: [] }) };
+  }
+
   /** UK Met Office space weather overview (HTML in JSON) -> {meta, text, saved} */
   async metOffice() {
     const m = await fetchWithMeta(this.url('/api/metoffice/overview'));
@@ -84,4 +90,22 @@ export class ProxyClient {
 
 export function stripHtml(html) {
   return html.replace(/<br\s*\/?>/gi, '\n').replace(/<\/p>/gi, '\n').replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/**
+ * Parse a TGO K-index file: "K-Indices for Tromso", then rows "18 sep. 2026 4111 0123" with eight
+ * 3-hour digits (x = not yet available). Returns {name, days:[{date (ms, UTC midnight), k:[8 numbers or null]}]}.
+ */
+export function parseTgoK(txt) {
+  const MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, mai: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, okt: 9, nov: 10, dec: 11, des: 11 };
+  const name = (txt.match(/K-Indices for (.+)/) || [])[1]?.trim() || null;
+  const days = [];
+  for (const line of txt.split('\n')) {
+    const m = line.trim().match(/^(\d{1,2}) ([a-z]{3})\.? (\d{4}) ([0-9x]{4}) ([0-9x]{4})$/i);
+    if (!m) continue;
+    const mon = MONTHS[m[2].toLowerCase()]; if (mon === undefined) continue;
+    const digits = (m[4] + m[5]).split('').map(c => (c === 'x' ? null : +c));
+    days.push({ date: Date.UTC(+m[3], mon, +m[1]), k: digits });
+  }
+  return { name, days };
 }

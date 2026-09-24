@@ -5,6 +5,7 @@ const FMI_STATIONS = new Set(['KEV', 'MAS', 'KIL', 'IVA', 'MUO', 'PEL', 'RAN', '
 const GFZ_INDICES = new Set(['Kp', 'Hp30', 'Hp60', 'ap30', 'ap60', 'ap', 'Ap']);
 const HPO_MODELS = new Set(['aceprop', 'enlil', 'euhforia', 'swpc', 'mean', 'mean_bars', 'mean_bars_dark']);
 const HPO_INDICES = new Set(['Hp30', 'Hp60', 'Kp']);
+const TGO_SITES = new Set(['tro2a', 'and1a', 'bjn1a', 'nal1a', 'dob1a', 'bfe6d', 'lrv1a']);
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 
 /** Route table: {match, upstream(match, url) -> URL string or null, ttl seconds, type, attribution}. */
@@ -42,6 +43,10 @@ export const ROUTES = [
   {
     match: /^\/api\/irf\/kiruna$/, ttl: 120, type: 'text/plain', attribution: 'Swedish Institute of Space Physics, Kiruna (provisional)',
     upstream: () => 'https://www2.irf.se/maggraphs/rt_iaga_last_hour_secondary.txt',
+  },
+  {
+    match: /^\/api\/tgo\/k\/([a-z0-9]{5})$/, ttl: 600, type: 'text/plain', attribution: 'Tromsø Geophysical Observatory, UiT (provisional K-indices)',
+    upstream: (m) => (TGO_SITES.has(m[1]) ? `https://flux.phys.uit.no/Kindice/k_${m[1]}.txt` : null),
   },
   {
     match: /^\/api\/metoffice\/overview$/, ttl: 600, type: 'application/json', attribution: 'UK Met Office, Crown copyright',

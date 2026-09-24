@@ -69,6 +69,32 @@ export function equatorwardBoundary(grid, mlt, threshold = 1.0) {
   return { mlat: boundary, atEdge, peakFlux, peakMlat, threshold };
 }
 
+/**
+ * Both edges of the oval at a magnetic local time: the most equatorward and the most
+ * poleward latitude where the electron flux reaches `threshold`, plus the latitude and value
+ * of the flux peak. `position` places an observer latitude relative to the band:
+ * 'equatorward' (oval north of the observer), 'inside', 'poleward' (observer in the polar cap),
+ * or 'none' when the flux never reaches the threshold at this MLT.
+ */
+export function ovalBand(grid, mlt, threshold = 1.0, observerMlat = NaN) {
+  const b = Math.floor((((mlt % 24) + 24) % 24) / 0.25);
+  const bins = [(b + 95) % 96, b, (b + 1) % 96];
+  let eq = NaN, pw = NaN, peakFlux = 0, peakMlat = NaN;
+  for (let j = 0; j < OVATION_MLAT_BINS; j++) {
+    const flux = bins.reduce((s, mb) => s + electronFlux(grid, mb, j), 0) / bins.length;
+    const mlat = OVATION_MLAT0 + j * 0.5;
+    if (flux > peakFlux) { peakFlux = flux; peakMlat = mlat; }
+    if (flux >= threshold) { if (!Number.isFinite(eq)) eq = mlat; pw = mlat; }
+  }
+  let position = 'none', offset = NaN;
+  if (Number.isFinite(eq) && Number.isFinite(observerMlat)) {
+    if (observerMlat < eq) { position = 'equatorward'; offset = eq - observerMlat; }
+    else if (observerMlat > pw) { position = 'poleward'; offset = observerMlat - pw; }
+    else { position = 'inside'; offset = 0; }
+  }
+  return { equatorward: eq, poleward: pw, width: Number.isFinite(eq) ? pw - eq : NaN, peakMlat, peakFlux, threshold, position, offset, atEdge: eq === OVATION_MLAT0 };
+}
+
 /** Hemispheric power from the grid (GW), for cross-checking the header value. */
 export function hemisphericPower(grid) {
   // cell area: 0.5 deg lat x 0.25 h (3.75 deg) lon on a sphere of radius R_E + 110 km
