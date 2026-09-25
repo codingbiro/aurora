@@ -83,6 +83,10 @@ input[type="number"] { width: 5.5em; font-family: var(--mono); }
 .freshness li.stale::before, .freshness li.missing::before { background: var(--critical); }
 .freshness li .age { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .signals { margin-top: -4px; }
+.sighting { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; font-size: 0.85rem; color: var(--ink-2); }
+.sighting-label { color: var(--muted); }
+.sighting input { width: 14em; }
+.sighting button { padding: 4px 8px; font-size: 0.8rem; }
 .signals li { font-size: 0.8rem; }
 
 /* layout */

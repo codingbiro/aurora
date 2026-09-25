@@ -11,6 +11,7 @@ export const URLS = {
   summaryMag: `${NOAA}/products/summary/solar-wind-mag-field.json`,
   summarySpeed: `${NOAA}/products/summary/solar-wind-speed.json`,
   geospaceKp1h: `${NOAA}/json/geospace/geospace_pred_est_kp_1_hour.json`,
+  geospaceKp7d: `${NOAA}/json/geospace/geospce_pred_est_kp_7_day.json`, // the typo in the file name is NOAA's
   geospaceDst1h: `${NOAA}/json/geospace/geospace_dst_1_hour.json`,
   ovationText: `${NOAA}/text/ovation_latest_aurora_n.txt`,
   ovationGrid: `${NOAA}/json/ovation_aurora_latest.json`,

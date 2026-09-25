@@ -8,6 +8,7 @@ import { MagneticCoordinates } from './model/magcoords.mjs';
 import { parseOvationText, kpForBoundary, VIEW_ALLOWANCE_DEG, TIERS } from './model/oval.mjs';
 import { skyState } from './model/sky.mjs';
 import { loadLocal, localSignal } from './data/local.mjs';
+import { pairWithHp30, mosFit, mosApply } from './model/mos.mjs';
 import { substormState, toMinutes, quietBaseline, substormOutlook, phaseIntervals, onsetMltDensity, ONSET_CLIMATOLOGY } from './model/substorm.mjs';
 import { shortTermForecast } from './model/shortterm.mjs';
 import { weightedRecentAverage } from './model/integrate.mjs';
@@ -43,7 +44,7 @@ const state = {
   propagated: [], ovation: null, ovationGrid: null, kp1m: [], geospaceKp: [], hemi: [], hp30: [], hpo: [], stations: [], rtsw: null,
   kpForecast: [], geomag: null, threeDay: null, discussion: null, outlook: null, alerts: [], scales: null, enlil: null, cmes: [], gfzEnsemble: [], clear: [], metoffice: null, sidc: null, flares: [],
   meta: {}, sub: null, fc: null, substormOutlook: null, tgo: null,
-  geoDst: [], kyotoDst: [], localRaw: {}, local: null, sky: null,
+  geoDst: [], kyotoDst: [], localRaw: {}, local: null, sky: null, geoWeek: [], geoMos: null,
 };
 
 async function loadStatic() {
@@ -83,12 +84,12 @@ async function pollFast() {
 async function pollHp30() {
   const now = Date.now();
   if (proxy.available) {
-    const r = await proxy.gfzIndex('Hp30', now - 3 * 86400e3, now + HOUR);
+    const r = await proxy.gfzIndex('Hp30', now - 7 * 86400e3, now + HOUR);
     state.meta.hp30 = r.meta; if (r.data.length) state.hp30 = r.data.map(x => ({ t: x.t, value: x.value }));
     const f = await proxy.gfzHpoForecast('aceprop', 'Hp30');
     if (!f.data.length || !f.data.some(x => Number.isFinite(x.median))) { const g = await proxy.gfzHpoForecast('mean_bars', 'Hp30'); state.hpo = g.data; state.meta.hpo = g.meta; } else { state.hpo = f.data; state.meta.hpo = f.meta; }
   } else {
-    const r = await iswaHp30(now, 72); state.meta.hp30 = r.meta; if (r.data.length) state.hp30 = r.data.map(x => ({ t: x.t, value: x.hp30 }));
+    const r = await iswaHp30(now, 168); state.meta.hp30 = r.meta; if (r.data.length) state.hp30 = r.data.map(x => ({ t: x.t, value: x.hp30 }));
     // browser-only substorm fallback: INTERMAGNET NUR and HRN (CC BY-NC, 4-min lag)
     const gin = await Promise.all([['nur', 60.5, 24.65], ['hrn', 77.0, 15.55]].map(async ([code, la, lo]) => { const g = await ginMinute(code, now, 24); const c = state.mag.convert(la, lo); return { station: code.toUpperCase(), mlat: c.mlat, mlon: c.mlon, series: g.series, meta: g.meta }; }));
     if (gin.some(s => s.series.t.length)) { state.stations = gin.filter(s => s.series.t.length); state.meta.fmi = gin[0].meta; state.stationSource = 'INTERMAGNET'; }
@@ -125,6 +126,9 @@ async function pollSlow() {
   state.meta.donki = cmes.meta; state.cmes = cmeArrivals(cmes.data, now, { horizonDays: 5 });
   if (flares.data) state.flares = parseFlares(flares.data);
   const clear = await iswaClear(now).catch(() => ({ data: [] })); state.clear = clear.data || [];
+  // a week of the Geospace model's Kp for the running correction against observed Hp30
+  const gw = await load.json(URLS.geospaceKp7d).catch(() => ({ data: null }));
+  if (Array.isArray(gw.data)) state.geoWeek = gw.data.map(r => ({ t: Date.parse((r.model_prediction_time || r.time_tag) + (String(r.model_prediction_time || r.time_tag).endsWith('Z') ? '' : 'Z')), kp: +(r.k ?? r.kp) })).filter(r => Number.isFinite(r.t) && Number.isFinite(r.kp) && r.t <= now);
   if (proxy.available) {
     const tgoSite = nearestTgo(state.observer.lat, state.observer.lon);
     const [ens, mo, sidc, tgo] = await Promise.all([proxy.gfzEnsemble('Kp'), proxy.metOffice(), proxy.sidc(), proxy.tgoK(tgoSite.site)]);
@@ -151,7 +155,10 @@ function compute() {
   state.dst = kyotoLast && now - kyotoLast.t < 3 * HOUR ? { value: kyotoLast.dst, t: kyotoLast.t, source: 'Kyoto' } : geoLast ? { value: geoLast.dst, t: geoLast.t, source: 'Geospace model' } : null;
   state.local = localSignal(state.localRaw, now);
   state.sky = skyState(now, state.observer.lat, state.observer.lon);
-  state.fc = shortTermForecast({ now, propagated: state.propagated, ovation: state.ovation, kp1m: state.kp1m, geospaceKp: state.geospaceKp, hp30: state.hp30, hpoForecast: state.hpo,
+  // Geospace Kp corrected by the running fit against observed Hp30 (model output statistics)
+  state.geoMos = state.geoWeek.length && state.hp30.length ? mosFit(pairWithHp30(state.geoWeek, state.hp30)) : null;
+  const geoCorrected = state.geoMos ? state.geospaceKp.map(r => ({ ...r, kp: mosApply(state.geoMos, r.kp) })) : state.geospaceKp;
+  state.fc = shortTermForecast({ now, propagated: state.propagated, ovation: state.ovation, kp1m: state.kp1m, geospaceKp: geoCorrected, hp30: state.hp30, hpoForecast: state.hpo,
     observer: state.obs, mag: state.mag, substorm: state.sub, coefficients: state.coefficients, outlook: state.substormOutlook, dst: state.dst ? state.dst.value : NaN, local: state.local });
 }
 
@@ -159,7 +166,7 @@ function renderShort() {
   const now = Date.now(); const fc = state.fc;
   const kpObs = state.kp1m.length ? state.kp1m[state.kp1m.length - 1].kp : NaN;
   const hp30 = state.hp30.length ? state.hp30[state.hp30.length - 1].value : NaN;
-  renderVerdict(fc, state.obs, state.mag, { thresholds: state.thresholds, tierThresholds: state.tierThresholds, kpObs, hp30, sky: state.sky, dst: state.dst });
+  renderVerdict(fc, state.obs, state.mag, { thresholds: state.thresholds, tierThresholds: state.tierThresholds, kpObs, hp30, sky: state.sky, dst: state.dst, geoMos: state.geoMos });
   renderTiles(fc);
   renderLocalSignals({ local: state.local, dst: state.dst, sky: state.sky, now, regime: fc?.regime });
   renderHorizonTable(fc);
@@ -290,6 +297,23 @@ async function boot() {
   window.addEventListener('resize', debounce(renderAll, 250));
   window.__aurora = state;
 }
+
+// ---------------------------------------------------------------- sightings (verification truth)
+async function logSighting(seen) {
+  const status = document.getElementById('sighting-status');
+  if (!proxy.available) { status.textContent = 'Needs the Worker.'; return; }
+  let token = null; try { token = localStorage.getItem('aurora.sightingToken'); } catch {}
+  if (!token) { token = prompt('Sighting token (the SIGHTING_TOKEN secret of the Worker):'); if (!token) return; try { localStorage.setItem('aurora.sightingToken', token.trim()); } catch {} token = token.trim(); }
+  status.textContent = 'Sending…';
+  try {
+    const res = await fetch(proxy.url('/api/sighting'), { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ t: Date.now(), lat: state.observer.lat, lon: state.observer.lon, seen, note: document.getElementById('sighting-note').value }) });
+    const j = await res.json().catch(() => ({}));
+    if (res.status === 401) { try { localStorage.removeItem('aurora.sightingToken'); } catch {} status.textContent = 'Token rejected; try again.'; return; }
+    status.textContent = res.ok ? `Logged "${seen}" at ${fmt.hm(Date.now())} UTC (${j.count} this month). Thanks: it feeds the model check.` : `Failed: ${j.error || res.status}`;
+    if (res.ok) document.getElementById('sighting-note').value = '';
+  } catch (e) { status.textContent = `Failed: ${e.message}`; }
+}
+for (const b of document.querySelectorAll('#sighting-form button[data-seen]')) b.addEventListener('click', () => logSighting(b.dataset.seen));
 
 function syncLocationForm() {
   const sel = document.getElementById('place'); const key = `${state.observer.lat},${state.observer.lon}`;

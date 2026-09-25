@@ -54,8 +54,8 @@ describe('handleApi (offline paths)', () => {
     const r = await handleApi(req('/api/gfz/index', { method: 'OPTIONS', headers: { Origin: 'https://a.b' } }));
     assert.equal(r.status, 204);
     assert.equal(r.headers.get('access-control-allow-origin'), '*');
-    assert.equal(r.headers.get('access-control-allow-methods'), 'GET, OPTIONS');
-    assert.equal(r.headers.get('access-control-allow-headers'), 'Content-Type');
+    assert.equal(r.headers.get('access-control-allow-methods'), 'GET, POST, OPTIONS');
+    assert.equal(r.headers.get('access-control-allow-headers'), 'Content-Type, Authorization');
     assert.equal(r.headers.get('vary'), 'Origin');
   });
   test('rejects other methods', async () => {
@@ -93,6 +93,6 @@ describe('corsHeaders', () => {
     assert.equal(corsHeaders(req('/x', { headers: { Origin: 'https://b.c' } }), env)['Access-Control-Allow-Origin'], 'https://b.c');
     assert.equal(corsHeaders(req('/x', { headers: { Origin: 'https://zzz' } }), env)['Access-Control-Allow-Origin'], 'https://a.b');
     const h = corsHeaders(req('/x'), env);
-    assert.equal(h['Access-Control-Allow-Methods'], 'GET, OPTIONS'); assert.equal(h.Vary, 'Origin');
+    assert.equal(h['Access-Control-Allow-Methods'], 'GET, POST, OPTIONS'); assert.equal(h.Vary, 'Origin');
   });
 });

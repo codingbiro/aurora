@@ -78,7 +78,7 @@ export function corsHeaders(request, env) {
   const origin = request.headers.get('Origin') || '';
   const allowed = (env && env.ALLOWED_ORIGINS ? String(env.ALLOWED_ORIGINS) : '*').split(',').map(s => s.trim()).filter(Boolean);
   const allow = allowed.includes('*') ? '*' : (allowed.includes(origin) ? origin : allowed[0] || '');
-  return { 'Access-Control-Allow-Origin': allow, 'Access-Control-Allow-Methods': 'GET, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type',
+  return { 'Access-Control-Allow-Origin': allow, 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Access-Control-Expose-Headers': 'X-Upstream-Last-Modified, X-Proxy-Cache, X-Proxy-Fetched-At, X-Attribution', 'Vary': 'Origin' };
 }
 
@@ -86,13 +86,16 @@ export function corsHeaders(request, env) {
 export async function handleApi(request, env = {}) {
   const url = new URL(request.url);
   const cors = corsHeaders(request, env);
-  if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
+  if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: { ...cors, 'Access-Control-Allow-Headers': 'Content-Type, Authorization' } });
+  if (url.pathname === '/api/sighting' && request.method === 'POST') return recordSighting(request, env, cors);
   if (request.method !== 'GET') return json({ error: 'method not allowed' }, 405, cors);
   if (url.pathname === '/api/health') return json({ ok: true, time: new Date().toISOString(), routes: ROUTES.length, cached: memoryCache.size }, 200, cors);
   if (url.pathname === '/api/state' && env.SNAP) {
     const state = await env.SNAP.get('state:latest');
     return new Response(state || 'null', { headers: { ...cors, 'Content-Type': 'application/json' } });
   }
+  if (url.pathname === '/api/trail') return forecastLog(url, env, cors);
+  if (url.pathname === '/api/sightings') return listSightings(request, url, env, cors);
 
   for (const route of ROUTES) {
     const m = url.pathname.match(route.match);
@@ -123,6 +126,58 @@ export async function handleApi(request, env = {}) {
     }
   }
   return json({ error: 'not found' }, 404, cors);
+}
+
+/** The cron's forecast log for the last `days` days (max 60): {days: {YYYY-MM-DD: rows}, columns}. */
+async function forecastLog(url, env, cors) {
+  if (!env.SNAP) return json({ error: 'no store' }, 404, cors);
+  const days = Math.min(60, Math.max(1, +(url.searchParams.get('days') || 14)));
+  const out = {};
+  const today = Date.now();
+  for (let i = 0; i < days; i++) {
+    const date = new Date(today - i * 86400e3).toISOString().slice(0, 10);
+    const rows = await env.SNAP.get(`fc:${date}`, 'json');
+    if (rows && rows.length) out[date] = rows;
+  }
+  return json({ columns: ['time', 'place', 'lead', 'centre', 'sigma', 'pCamera', 'pEyeDark', 'pEyeCity', 'pOverhead', 'kpModel', 'anchorHp30', 'anchorAgeMin', 'dst', 'auroraWatch', 'tormestorpK', 'mlt'], days: out }, 200, cors);
+}
+
+function sightingAuth(request, env) {
+  const token = String(env.SIGHTING_TOKEN || '').trim();
+  if (!token) return 'unconfigured';
+  const auth = request.headers.get('Authorization') || '';
+  return auth === `Bearer ${token}` ? 'ok' : 'denied';
+}
+
+/** POST /api/sighting {t?, lat, lon, seen: 'eye'|'camera'|'none', note?} with Authorization: Bearer SIGHTING_TOKEN. */
+async function recordSighting(request, env, cors) {
+  const auth = sightingAuth(request, env);
+  if (auth === 'unconfigured') return json({ error: 'SIGHTING_TOKEN not set' }, 404, cors);
+  if (auth !== 'ok') return json({ error: 'unauthorized' }, 401, cors);
+  if (!env.SNAP) return json({ error: 'no store' }, 404, cors);
+  let body; try { body = await request.json(); } catch { return json({ error: 'bad json' }, 400, cors); }
+  const seen = ['eye', 'camera', 'none'].includes(body.seen) ? body.seen : null;
+  const lat = +body.lat, lon = +body.lon; const t = Number.isFinite(+body.t) ? +body.t : Date.now();
+  if (!seen || !Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return json({ error: 'need seen (eye|camera|none), lat, lon' }, 400, cors);
+  const row = { t: new Date(t).toISOString(), lat: +lat.toFixed(3), lon: +lon.toFixed(3), seen, note: String(body.note || '').slice(0, 140) };
+  const key = `sightings:${row.t.slice(0, 7)}`;
+  const rows = (await env.SNAP.get(key, 'json')) || [];
+  rows.push(row); if (rows.length > 2000) rows.splice(0, rows.length - 2000);
+  await env.SNAP.put(key, JSON.stringify(rows));
+  return json({ ok: true, count: rows.length, row }, 200, cors);
+}
+
+/** GET /api/sightings?months=N (Bearer SIGHTING_TOKEN): the logged sightings, newest month first. */
+async function listSightings(request, url, env, cors) {
+  const auth = sightingAuth(request, env);
+  if (auth === 'unconfigured') return json({ error: 'SIGHTING_TOKEN not set' }, 404, cors);
+  if (auth !== 'ok') return json({ error: 'unauthorized' }, 401, cors);
+  if (!env.SNAP) return json({ error: 'no store' }, 404, cors);
+  const months = Math.min(12, Math.max(1, +(url.searchParams.get('months') || 3)));
+  const rows = [];
+  const d = new Date();
+  for (let i = 0; i < months; i++) { const key = `sightings:${new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - i, 1)).toISOString().slice(0, 7)}`; const r = await env.SNAP.get(key, 'json'); if (r) rows.push(...r); }
+  return json({ rows: rows.sort((a, b) => a.t.localeCompare(b.t)) }, 200, cors);
 }
 
 function respond(entry, route, cors, cacheState, now) {

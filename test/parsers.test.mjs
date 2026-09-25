@@ -248,7 +248,7 @@ describe('NOAA JSON products', async () => {
   });
   test('URL table and loaders exist', () => {
     assert.equal(NOAA, 'https://services.swpc.noaa.gov');
-    assert.equal(Object.keys(URLS).length, 23);
+    assert.equal(Object.keys(URLS).length, 24);
     assert.ok(Object.values(URLS).every(u => u.startsWith(NOAA + '/')));
     assert.equal(URLS.propagated1h, `${NOAA}/products/geospace/propagated-solar-wind-1-hour.json`);
     assert.deepEqual(Object.keys(load).sort(), ['geospaceKp', 'hemiPower', 'json', 'kp1m', 'kp3h', 'kpForecast', 'ovationText', 'propagated', 'rtsw', 'scales', 'summary', 'text']);

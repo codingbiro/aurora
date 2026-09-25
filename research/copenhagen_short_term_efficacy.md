@@ -142,4 +142,6 @@ Ranked by expected gain for a Copenhagen observer:
 - Sky: solar elevation, darkness class, tonight's dark window, moon illumination.
 - `calibration/hindcast.mjs` for the numbers in section 3; 11 new tests (130 in total).
 
-Not implemented: the verification loop against sightings, a Geospace bias correction, the ±15 min timing smear, Troyer et al. 2025 Hp30-driven boundaries (coefficients not public).
+Added on 2026-09-25: the verification loop (cron log of tier forecasts with truth signals, sighting buttons and token-guarded endpoints, scoring on the model-check page with Brier, BSS, AUC and reliability against Hp30, AuroraWatch UK and sightings), the Geospace correction (linear MOS refitted every 15 minutes on the last week against Hp30, slope limited to 0.7–1.5), and the timing smear (each ensemble member reads the propagated series with its own arrival-time offset, normal with a 10-minute spread, clipped at ±20 min).
+
+Not implemented: Troyer et al. 2025 Hp30-driven boundaries (coefficients not public).

@@ -41,6 +41,10 @@ export function shortTermForecast(inputs) {
   const clim = futureTimes.length && nClim ? climatologyEnsemble(lastRec.coupling, coefficients.extrapolation, lagsMin, { members: nClim }) : [];
   const members = ens.members.length || clim.length ? [...ens.members, ...clim] : [futureTimes.map(() => lastRec.coupling)];
   if (members.length > 1) { ens.central = futureTimes.map((_, i) => quantile(members.map(p => p[i]), 0.5)); ens.quantiles = { p10: futureTimes.map((_, i) => quantile(members.map(p => p[i]), 0.1)), p90: futureTimes.map((_, i) => quantile(members.map(p => p[i]), 0.9)) }; }
+  // Arrival-time uncertainty of the flat-plane L1 shift ("errors of ±15 min are common", Cash et al. 2016): every
+  // member reads the measured series with its own timing offset, normal with a 10-minute spread, clipped at ±20 min.
+  const timingNoise = mulberry32(23), timingSd = Number.isFinite(inputs.timingSdMin) ? inputs.timingSdMin : 10;
+  const shifts = members.map(() => (members.length > 1 ? Math.max(-20, Math.min(20, gaussian(timingNoise) * timingSd)) * MIN : 0));
   // observed anchors for the persistence blend
   const kpObsLast = (inputs.kp1m || []).filter(r => Number.isFinite(r.kp) && r.t <= now + MIN).slice(-1)[0] || null;
   const hp30Last = (inputs.hp30 || []).filter(r => Number.isFinite(r.value) && r.t <= now).slice(-1)[0] || null;
@@ -61,10 +65,12 @@ export function shortTermForecast(inputs) {
     return { s, n };
   };
   const weights = [1, 0.65, 0.4225, 0.274625];
-  const avgForMember = (path, T) => {
+  const avgForMember = (path, T, shift = 0) => {
+    // shift > 0 means the solar wind arrives later than stamped: the member reads the series at T - shift
+    const Ts = T - shift;
     let num = 0, den = 0, used = 0;
     for (let k = 0; k < 4; k++) {
-      const t0 = T - (k + 1) * HOUR, t1 = T - k * HOUR;
+      const t0 = Ts - (k + 1) * HOUR, t1 = Ts - k * HOUR;
       const a = knownStats(t0, Math.min(t1, tLast + MIN)), b = t1 > tLast ? extStats(path, Math.max(t0, tLast + MIN), t1) : { s: 0, n: 0 };
       const n = a.n + b.n; if (!n) continue;
       num += weights[k] * (a.s + b.s) / n; den += weights[k]; used++;
@@ -86,8 +92,8 @@ export function shortTermForecast(inputs) {
   for (const h of horizons) {
     const T = now + h * MIN;
     const mlt = mag.mlt(observer.mlon, new Date(T));
-    const couplingMembers = members.map(p => { const j = Math.round((T - futureTimes[0]) / MIN); return T <= tLast ? couplingAt(known, T) : p[Math.min(Math.max(j, 0), p.length - 1)]; });
-    const drivingMembers = members.map(p => avgForMember(p, T));
+    const couplingMembers = members.map((p, m) => { const Ts = T - shifts[m]; const j = Math.round((Ts - futureTimes[0]) / MIN); return Ts <= tLast ? couplingAt(known, Ts) : p[Math.min(Math.max(j, 0), p.length - 1)]; });
+    const drivingMembers = members.map((p, m) => avgForMember(p, T, shifts[m]));
     const visc = viscousAvg(T);
     let kpMembers = drivingMembers.map(d => hp30FromDriving(d, visc, hp30Coefs, stormCoefs));
     const hpMembers = kpMembers.slice();
@@ -99,7 +105,7 @@ export function shortTermForecast(inputs) {
     const blended = blend([
       { value: kpCentralRaw, weight: 1, source: 'coupling' },
       { value: geo, weight: T <= tLast + 15 * MIN ? 0.8 : 0.4, source: 'noaa-geospace' },
-      { value: hpo, weight: 0.5, source: 'gfz-hpo' },
+      { value: hpo, weight: h <= 60 ? 0.25 : 0.5, source: 'gfz-hpo' },
     ]);
     // Persistence anchor: the last observed index beats any model at short lead (calibration: RMSE 0.62 vs 0.75 at
     // 30 min). The weight per lead comes from the blend calibration (0.65 at +0, 0.45 at +30, 0.40 beyond) scaled by
@@ -175,7 +181,7 @@ export function shortTermForecast(inputs) {
       ovationBoundary: ovNow && Number.isFinite(ovNow.mlat) ? ovNow.mlat : NaN, ovationAtEdge: !!ovNow?.atEdge, margin: marginNow, visibility: visibilityClass(marginNow),
       phase: substorm?.phase || 'unknown', dst, dstBoundary: dstB, local: local || null },
     horizons: rows,
-    ensemble: { times: futureTimes, central: ens.central, quantiles: ens.quantiles, members: members.length, analog: ens.members.length, climatology: clim.length }, anchor,
+    ensemble: { times: futureTimes, central: ens.central, quantiles: ens.quantiles, members: members.length, analog: ens.members.length, climatology: clim.length, timingSdMin: timingSd }, anchor,
     blend: blendTable ? { weights: blendTable.weight, sigma: blendTable.sigma, leads: blendTable.leads } : null,
     verdict: verdict(rows, marginNow, substorm, ovFaint, mltNow, outlook, regime, local),
   };

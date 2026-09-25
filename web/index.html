@@ -69,6 +69,14 @@
     </div>
     <div class="tiles" id="tiles" role="list"></div>
     <ul class="freshness signals" id="local-signals" aria-label="Sky, ring current and local magnetometers"></ul>
+    <form class="sighting" id="sighting-form" autocomplete="off" aria-label="Log what you saw">
+      <span class="sighting-label">Did you see it? Log it for verification:</span>
+      <button type="button" data-seen="eye">Saw it by eye</button>
+      <button type="button" data-seen="camera">Only on camera</button>
+      <button type="button" data-seen="none">Nothing</button>
+      <input id="sighting-note" type="text" maxlength="140" placeholder="note (optional)">
+      <span class="note" id="sighting-status"></span>
+    </form>
     <figure class="chart" id="timeline">
       <figcaption>Solar wind driving and activity, last 6 hours and next 2 hours</figcaption>
       <div class="chart-body" id="timeline-chart"></div>

@@ -24,6 +24,13 @@
     <figure class="chart"><figcaption>Residuals of the fit on the test period</figcaption><div class="chart-body" id="residual-chart"></div></figure>
     <div class="discussion" id="cal-notes"></div>
   </section>
+  <section class="panel" aria-labelledby="ver-title">
+    <div class="panel-head"><h2 id="ver-title">Forecast verification from the Worker's log</h2><p class="panel-sub" id="ver-sub">Tier probabilities issued every 5 minutes at +10, +30 and +60 min, scored against what followed.</p></div>
+    <div class="table-scroll"><table id="ver-table"></table></div>
+    <figure class="chart"><figcaption>Reliability of the naked-eye (dark site) tier at +30 min: forecast probability versus how often the truth followed</figcaption><div class="chart-body" id="ver-reliability"></div><div class="legend" id="ver-legend"></div></figure>
+    <div class="discussion" id="ver-notes"></div>
+    <div class="table-scroll"><table id="sightings-table"></table></div>
+  </section>
   <section class="panel" aria-labelledby="live-title">
     <div class="panel-head"><h2 id="live-title">Live hindcast, last 3 days</h2><p class="panel-sub" id="live-sub">Kp modeled from NOAA's propagated solar wind versus what was observed.</p></div>
     <figure class="chart"><figcaption>Modeled Kp against observed Hp30 (GFZ, via iSWA mirror) and NOAA estimated Kp</figcaption><div class="chart-body" id="hindcast-chart"></div><div class="legend" id="hindcast-legend"></div></figure>
