@@ -1,18 +1,17 @@
 // Cloudflare Worker: /api proxy for CORS-less feeds, plus a 5-minute cron that keeps a
 // rolling driving history, evaluates a light nowcast for the configured observer, stores a
 // verification trail in KV and (optionally) pushes a notification through ntfy.sh.
-import { handleApi } from './proxy.mjs';
+import { handleApi, corsHeaders, tokenMatches } from './proxy.mjs';
 import { runScheduled, resolveObservers, sendAlert, channelNames } from './scheduled.mjs';
-import { corsHeaders } from './proxy.mjs';
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     if (url.pathname === '/api/cron') {
-      // Manual trigger for the scheduled job (verification, or an external scheduler as a fallback).
+      // Manual trigger for the scheduled job (verification, or an external scheduler as a fallback). The token only
+      // travels in the Authorization header: request URLs end up in logs and shell history.
       const auth = request.headers.get('Authorization') || '';
-      const token = auth.startsWith('Bearer ') ? auth.slice(7) : url.searchParams.get('token');
-      if (!env.CRON_TOKEN || !token || token !== env.CRON_TOKEN) return new Response('not found', { status: 404 });
+      if (!env.CRON_TOKEN || !auth.startsWith('Bearer ') || !(await tokenMatches(auth.slice(7), env.CRON_TOKEN))) return new Response('not found', { status: 404 });
       if (url.searchParams.get('proxydebug') === '1') {
         // Step-by-step check of the proxy tunnel from inside the Worker.
         const { fetchViaHttpProxy, debugConnect } = await import('./proxyfetch.mjs');
@@ -57,6 +56,13 @@ export default {
         }
         return new Response(JSON.stringify({ ok: true, results, tokenInfo, account, lastError: lastError ? JSON.parse(lastError) : null }), { headers: { 'Content-Type': 'application/json' } });
       }
+      // A fallback caller (GitHub Actions every 30 min) must not run the job right after the 5-minute cron did: the two
+      // would race on the same KV keys and spend writes. ?force=1 runs it anyway.
+      if (url.searchParams.get('force') !== '1' && env.SNAP) {
+        const last = await env.SNAP.get('state:latest', 'json').catch(() => null);
+        const age = last && last.time ? Date.now() - Date.parse(last.time) : Infinity;
+        if (age < 4 * 60e3) return new Response(JSON.stringify({ ok: true, skipped: `the scheduled run ${Math.round(age / 1000)} s ago is recent`, time: last.time }), { headers: { 'Content-Type': 'application/json' } });
+      }
       try {
         const state = await runScheduled(env, Date.now());
         return new Response(JSON.stringify({ ok: true, state }), { headers: { ...corsHeaders(request, env), 'Content-Type': 'application/json' } });
@@ -64,7 +70,7 @@ export default {
         return new Response(JSON.stringify({ ok: false, error: String(err && err.stack || err) }), { status: 500, headers: { 'Content-Type': 'application/json' } });
       }
     }
-    if (url.pathname.startsWith('/api/')) return handleApi(request, env);
+    if (url.pathname.startsWith('/api/')) return handleApi(request, env, ctx);
     // Everything else is a static asset (web/); when assets are not configured, point at the dashboard.
     if (env.ASSETS) return env.ASSETS.fetch(request);
     return new Response(`aurora proxy. Health: /api/health. Dashboard: ${env.DASHBOARD_URL || 'https://aurora.birovince.com/'}`, { headers: { 'Content-Type': 'text/plain' } });

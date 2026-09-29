@@ -1,20 +1,29 @@
 // Hindcast of the short-term decision for one observer: how well do the solar-wind model, the
 // persistence of the observed Hp30, and the dashboard's blend of the two predict the Hp30 of the
-// interval ending h minutes ahead, and the event "Hp30 at or above the observer's horizon
-// threshold"? Uses the cached GFZ Hp30 series and OMNI 5-minute files from `npm run calibrate`.
-// Usage: node calibration/hindcast.mjs [years=2] [mlat=52.42] [mltForThreshold=23] [eventThresholdHp30]
+// interval ending h minutes ahead, and the events "Hp30 at or above the observer's camera (8 deg)
+// and naked-eye (5 deg) thresholds"? The blend is the dashboard's own: weights and spreads from
+// coefficients.json (blend table), the anchor's age scaling as in shortterm.mjs. In-sample: the shipped
+// coefficients were fitted on these years. Uses the cached GFZ Hp30 series and OMNI 5-minute files
+// from `npm run calibrate`.
+// Usage: node calibration/hindcast.mjs [years=2] [lat=55.676] [lon=12.568] [mltForThreshold=23] [eventThresholdHp30]
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { parseOmniLine, parseHp30Line, MIN } from './lib.mjs';
 import { hp30FromDriving } from '../web/src/model/activity.mjs';
-import { kpForBoundary, VIEW_ALLOWANCE_DEG } from '../web/src/model/oval.mjs';
+import { kpForBoundary, VIEW_ALLOWANCE_DEG, TIERS } from '../web/src/model/oval.mjs';
 import { normalCdf } from '../web/src/model/substorm.mjs';
+import { MagneticCoordinates } from '../web/src/model/magcoords.mjs';
 
 const cacheDir = fileURLToPath(new URL('./cache/', import.meta.url));
-const years = +(process.argv[2] || 2), mlat = +(process.argv[3] || 52.42), mltThr = +(process.argv[4] || 23), thrOverride = process.argv[5] ? +process.argv[5] : NaN;
+const years = +(process.argv[2] || 2), lat = +(process.argv[3] || 55.676), lon = +(process.argv[4] || 12.568), mltThr = +(process.argv[5] || 23), thrOverride = process.argv[6] ? +process.argv[6] : NaN;
 const HOUR = 3600e3;
 const coefs = JSON.parse(await readFile(new URL('../web/data/coefficients.json', import.meta.url), 'utf8'));
+const mag = new MagneticCoordinates(JSON.parse(await readFile(new URL('../web/data/aacgm_europe_grid.json', import.meta.url), 'utf8')), JSON.parse(await readFile(new URL('../web/data/mlt_reference.json', import.meta.url), 'utf8')));
+const { mlat, mlon } = mag.convert(lat, lon);
+/** The dashboard's blend at a lead (shortterm.mjs): table weight scaled by the anchor's freshness, the table's spread. */
+const interp = (xs, ys, x) => { if (x <= xs[0]) return ys[0]; for (let i = 0; i + 1 < xs.length; i++) if (x <= xs[i + 1]) return ys[i] + (x - xs[i]) / (xs[i + 1] - xs[i]) * (ys[i + 1] - ys[i]); return ys[ys.length - 1]; };
+const dashBlend = (h, ageMin) => ({ w: interp(coefs.blend.leads, coefs.blend.weight, h) * Math.min(1, Math.max(0, 1 - Math.max(0, ageMin - 20) / 60)), sigma: interp(coefs.blend.leads, coefs.blend.sigma, h) });
 
 const now = new Date();
 const start = Date.UTC(now.getUTCFullYear() - years, now.getUTCMonth(), now.getUTCDate());
@@ -30,10 +39,10 @@ const hpByEnd = new Map(hp.map(r => [r.tEnd, r.hp30]));
 console.log(`OMNI samples ${omni.length}, Hp30 intervals ${hp.length}, from ${new Date(start).toISOString().slice(0, 10)}`);
 
 // ---- thresholds for the observer (Starkov/NOAA hybrid boundary at the given MLT)
-const thrHorizon = kpForBoundary(mlat + VIEW_ALLOWANCE_DEG, mltThr), thrOverhead = kpForBoundary(mlat, mltThr);
+const thrHorizon = kpForBoundary(mlat + VIEW_ALLOWANCE_DEG, mltThr), thrEye = kpForBoundary(mlat + TIERS.eyeDark, mltThr), thrOverhead = kpForBoundary(mlat, mltThr);
 const toThird = (k) => Math.ceil(k * 3 - 1e-9) / 3; // Hp30 comes in thirds: the first value at or above the threshold
-const E = [['horizon', Number.isFinite(thrOverride) ? thrOverride : toThird(thrHorizon)], ['Kp5', 4.667], ['Kp6', 5.667], ['overhead', Number.isFinite(thrOverhead) ? toThird(thrOverhead) : Infinity]].filter(([, v]) => Number.isFinite(v));
-console.log(`observer mlat ${mlat}: horizon threshold Kp ${thrHorizon.toFixed(2)} (Hp30 >= ${E[0][1].toFixed(3)}), overhead ${Number.isFinite(thrOverhead) ? thrOverhead.toFixed(2) : 'never'}`);
+const E = [['camera', Number.isFinite(thrOverride) ? thrOverride : toThird(thrHorizon)], ['eyeDark', Number.isFinite(thrEye) ? toThird(thrEye) : Infinity], ['Kp5', 4.667], ['Kp6', 5.667], ['overhead', Number.isFinite(thrOverhead) ? toThird(thrOverhead) : Infinity]].filter(([, v]) => Number.isFinite(v));
+console.log(`observer ${lat}, ${lon} (mlat ${mlat.toFixed(2)}): camera threshold Kp ${thrHorizon.toFixed(2)} (Hp30 >= ${E[0][1].toFixed(3)}), naked eye ${Number.isFinite(thrEye) ? thrEye.toFixed(2) : 'never'}, overhead ${Number.isFinite(thrOverhead) ? thrOverhead.toFixed(2) : 'never'}`);
 
 // ---- driving averages with the OVATION weights; samples after `known` are frozen at the last known value
 const W = [1, 0.65, 0.4225, 0.274625];
@@ -50,7 +59,7 @@ function weighted(T, key, known = Infinity) {
 }
 
 // ---- solar elevation at Copenhagen for the darkness mask (NOAA approximation)
-function solarElevation(t, lat = 55.676, lon = 12.568) {
+function solarElevation(t) {
   const d = new Date(t); const doy = Math.floor((t - Date.UTC(d.getUTCFullYear(), 0, 1)) / 86400e3) + 1;
   const g = (2 * Math.PI / 365) * (doy - 1 + (d.getUTCHours() - 12) / 24);
   const eqt = 229.18 * (0.000075 + 0.001868 * Math.cos(g) - 0.032077 * Math.sin(g) - 0.014615 * Math.cos(2 * g) - 0.040849 * Math.sin(2 * g));
@@ -64,13 +73,13 @@ function solarElevation(t, lat = 55.676, lon = 12.568) {
 // ---- climatology of the decision during darkness
 const dark = hp.filter(r => solarElevation(r.tStart + 15 * MIN) < -12);
 const perYear = (n) => (n * 0.5 / years).toFixed(0);
-console.log(`\nDark intervals (sun below -12 deg at Copenhagen): ${dark.length} of ${hp.length} (${perYear(dark.length)} h/yr)`);
+console.log(`\nDark intervals (sun below -12 deg at the observer): ${dark.length} of ${hp.length} (${perYear(dark.length)} h/yr)`);
 for (const [name, thr] of [['Hp30 >= 3.667 (Kp 4-)', 3.667], [`horizon threshold ${E[0][1].toFixed(2)}`, E[0][1]], ['>= 4.667 (Kp 5-)', 4.667], ['>= 5.667 (Kp 6-)', 5.667], ['>= 6.667 (Kp 7-)', 6.667], ['>= 7.667 (Kp 8-)', 7.667]]) {
   const hits = dark.filter(r => r.hp30 >= thr); const nights = new Set(hits.map(r => new Date(r.tStart - 12 * HOUR).toISOString().slice(0, 10)));
   console.log(`  ${name.padEnd(30)} ${String(hits.length).padStart(5)} intervals = ${perYear(hits.length).padStart(4)} h/yr on ${(nights.size / years).toFixed(1)} nights/yr`);
 }
-// magnetic-midnight sector only (MLT 21-03 at Copenhagen: about 19:50-01:50 UT)
-const sector = dark.filter(r => { const h = new Date(r.tStart).getUTCHours() + new Date(r.tStart).getUTCMinutes() / 60; return h >= 19.8 || h < 1.8; });
+// magnetic-midnight sector only (MLT 21-03 at the observer)
+const sector = dark.filter(r => { const m = mag.mlt(mlon, new Date(r.tStart + 15 * MIN)); return m >= 21 || m < 3; });
 console.log(`  of which in the 21-03 MLT sector: ${sector.length} intervals; >= horizon threshold ${sector.filter(r => r.hp30 >= E[0][1]).length} (${perYear(sector.filter(r => r.hp30 >= E[0][1]).length)} h/yr), >= Kp 5- ${sector.filter(r => r.hp30 >= 4.667).length}, >= Kp 6- ${sector.filter(r => r.hp30 >= 5.667).length}`);
 
 // ---- skill by lead
@@ -89,9 +98,8 @@ console.log('  h    | model: driving measured | model: driving frozen at issue |
 const rowsOut = [];
 for (const h of leads) {
   const pairs = { measured: [], frozen: [], persist: [], blend: [], blendC: [] }; const probs = { clim: [], persist: [], model: [], blend: [], blendC: [] };
-  const wPersist = 0.85 * Math.exp(-(h + 15) / 60);
-  const sigmaDash = sigmaModel * (0.55 + 0.45 * Math.min(1, h / 120)) * (1 - 0.5 * wPersist);
   const kBack = Math.ceil((h + 15) / 30); // last complete interval at issue time is on average 15 min old
+  const { w: wPersist, sigma: sigmaDash } = dashBlend(h, kBack * 30 - h);
   const thr = E[0][1];
   let base = 0, cnt = 0;
   const cand = [];

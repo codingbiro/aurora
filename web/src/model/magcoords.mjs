@@ -10,7 +10,8 @@ export function dipoleCoords(lat, lon) {
   const sinMlat = Math.sin(la) * Math.sin(lp) + Math.cos(la) * Math.cos(lp) * Math.cos(lo - lop);
   const mlat = Math.asin(Math.min(1, Math.max(-1, sinMlat))) / DEG;
   const y = Math.cos(la) * Math.sin(lo - lop);
-  const x = Math.sin(la) * Math.cos(lp) - Math.cos(la) * Math.sin(lp) * Math.cos(lo - lop);
+  // east-positive, zero on the meridian through the geographic south pole (the geographic north pole is at 180°)
+  const x = Math.cos(la) * Math.sin(lp) * Math.cos(lo - lop) - Math.sin(la) * Math.cos(lp);
   const mlon = ((Math.atan2(y, x) / DEG) + 360) % 360;
   return { mlat, mlon };
 }

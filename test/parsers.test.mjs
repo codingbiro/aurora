@@ -90,6 +90,10 @@ describe('alerts', async () => {
     assert.equal(iso(w.issued), '2026-09-15T17:37:51.220Z');
     const cancelled = watches.find(x => x.cancelled);
     assert.equal(cancelled.code, 'WATA30'); assert.equal(cancelled.watchLevel, 2); assert.equal(cancelled.byDay.length, 0);
+    // the cancellation (serial 282) names serial 281, the G2 watch of 09-08, which is therefore cancelled too
+    const g2 = watches.find(x => x.serial === 281 && x.productId === 'A30F');
+    assert.equal(g2.cancelled, true, 'the watch a cancellation names is cancelled');
+    assert.deepEqual(watches.filter(x => !x.cancelled && !x.superseded).map(x => x.serial), [1125], 'only the newest watch stands');
   });
   test('K-index warnings and alerts carry the level and validity', () => {
     const k = alerts.filter(a => a.kLevel);
@@ -101,7 +105,8 @@ describe('alerts', async () => {
   });
   test('activeGeomagneticMessages filters by validity and age', () => {
     const active = activeGeomagneticMessages(alerts, now);
-    assert.deepEqual(active.map(a => `${a.code} ${iso(a.issued).slice(0, 16)}`), ['ALTK04 2026-09-16T00:34', 'WATA20 2026-09-15T17:37', 'ALTK04 2026-09-14T18:02', 'WATA20 2026-09-14T15:47']);
+    // the 09-14 watch (serial 1124) is superseded by the 09-15 one, which "supersedes any/all prior watches"
+    assert.deepEqual(active.map(a => `${a.code} ${iso(a.issued).slice(0, 16)}`), ['ALTK04 2026-09-16T00:34', 'WATA20 2026-09-15T17:37', 'ALTK04 2026-09-14T18:02']);
     assert.equal(activeGeomagneticMessages(alerts, now + 30 * DAY).length, 0);
     assert.ok(active.every(a => !a.cancelled));
   });

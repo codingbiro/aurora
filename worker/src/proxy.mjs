@@ -1,5 +1,6 @@
 // Allow-listed proxy for upstream feeds that send no CORS headers. Shared between the
 // Cloudflare Worker (worker/src/index.mjs) and the local Node dev server (scripts/dev-server.mjs).
+import { FORECAST_COLUMNS } from './scheduled.mjs';
 
 const FMI_STATIONS = new Set(['KEV', 'MAS', 'KIL', 'IVA', 'MUO', 'PEL', 'RAN', 'OUJ', 'MEK', 'HAN', 'NUR', 'TAR']);
 const GFZ_INDICES = new Set(['Kp', 'Hp30', 'Hp60', 'ap30', 'ap60', 'ap', 'Ap']);
@@ -7,6 +8,7 @@ const HPO_MODELS = new Set(['aceprop', 'enlil', 'euhforia', 'swpc', 'mean', 'mea
 const HPO_INDICES = new Set(['Hp30', 'Hp60', 'Kp']);
 const TGO_SITES = new Set(['tro2a', 'and1a', 'bjn1a', 'nal1a', 'dob1a', 'bfe6d', 'lrv1a']);
 const ISO = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+const HALF_HOUR = 30 * 60e3, isoSec = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
 
 /** Route table: {match, upstream(match, url) -> URL string or null, ttl seconds, type, attribution}. */
 export const ROUTES = [
@@ -15,7 +17,10 @@ export const ROUTES = [
     upstream: (_m, u) => {
       const index = u.searchParams.get('index'), start = u.searchParams.get('start'), end = u.searchParams.get('end');
       if (!GFZ_INDICES.has(index) || !ISO.test(start || '') || !ISO.test(end || '')) return null;
-      return `https://kp.gfz.de/app/json/?start=${start}&end=${end}&index=${index}`;
+      // widened to whole half hours, so polls a few seconds apart share one cache entry; at most 62 days a request
+      const s0 = Math.floor(Date.parse(start) / HALF_HOUR) * HALF_HOUR, s1 = Math.ceil(Date.parse(end) / HALF_HOUR) * HALF_HOUR;
+      if (!(s1 > s0) || s1 - s0 > 62 * 86400e3) return null;
+      return `https://kp.gfz.de/app/json/?start=${isoSec(s0)}&end=${isoSec(s1)}&index=${index}`;
     },
   },
   {
@@ -82,8 +87,8 @@ export function corsHeaders(request, env) {
     'Access-Control-Expose-Headers': 'X-Upstream-Last-Modified, X-Proxy-Cache, X-Proxy-Fetched-At, X-Attribution', 'Vary': 'Origin' };
 }
 
-/** Handle an /api request and return a Response. `env` may carry ALLOWED_ORIGINS. */
-export async function handleApi(request, env = {}) {
+/** Handle an /api request and return a Response. `env` may carry ALLOWED_ORIGINS; `ctx` (Worker) defers cache writes. */
+export async function handleApi(request, env = {}, ctx = null) {
   const url = new URL(request.url);
   const cors = corsHeaders(request, env);
   if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: { ...cors, 'Access-Control-Allow-Headers': 'Content-Type, Authorization' } });
@@ -91,8 +96,9 @@ export async function handleApi(request, env = {}) {
   if (request.method !== 'GET') return json({ error: 'method not allowed' }, 405, cors);
   if (url.pathname === '/api/health') return json({ ok: true, time: new Date().toISOString(), routes: ROUTES.length, cached: memoryCache.size }, 200, cors);
   if (url.pathname === '/api/state' && env.SNAP) {
-    const state = await env.SNAP.get('state:latest');
-    return new Response(state || 'null', { headers: { ...cors, 'Content-Type': 'application/json' } });
+    const state = await env.SNAP.get('state:latest', 'json');
+    if (state) delete state.rolling; // the cron's driving history shares the value
+    return json(state, 200, cors);
   }
   if (url.pathname === '/api/trail') return forecastLog(url, env, cors);
   if (url.pathname === '/api/sightings') return listSightings(request, url, env, cors);
@@ -116,9 +122,9 @@ export async function handleApi(request, env = {}) {
       }
       const body = await res.arrayBuffer();
       const entry = { expires: now + route.ttl * 1000, status: 200, type: route.type, body, lastModified: res.headers.get('last-modified') || '', fetchedAt: now };
-      memoryCache.set(cacheId, entry);
-      pruneCache();
-      await edgeCachePut(cacheId, entry, route);
+      if (body.byteLength <= 1e6) { memoryCache.set(cacheId, entry); pruneCache(); } // an isolate has 128 MB
+      const put = edgeCachePut(cacheId, entry, route);
+      if (ctx && ctx.waitUntil) ctx.waitUntil(put); else await put; // the response need not wait for the cache write
       return respond(entry, route, cors, 'MISS', now);
     } catch (err) {
       if (hit) return respond(hit, route, cors, 'STALE', now);
@@ -132,33 +138,56 @@ export async function handleApi(request, env = {}) {
 async function forecastLog(url, env, cors) {
   if (!env.SNAP) return json({ error: 'no store' }, 404, cors);
   const days = Math.min(60, Math.max(1, +(url.searchParams.get('days') || 14)));
-  const out = {};
   const today = Date.now();
-  for (let i = 0; i < days; i++) {
-    const date = new Date(today - i * 86400e3).toISOString().slice(0, 10);
-    const rows = await env.SNAP.get(`fc:${date}`, 'json');
-    if (rows && rows.length) out[date] = rows;
-  }
-  return json({ columns: ['time', 'place', 'lead', 'centre', 'sigma', 'pCamera', 'pEyeDark', 'pEyeCity', 'pOverhead', 'kpModel', 'anchorHp30', 'anchorAgeMin', 'dst', 'auroraWatch', 'tormestorpK', 'mlt'], days: out }, 200, cors);
+  const dates = Array.from({ length: days }, (_, i) => new Date(today - i * 86400e3).toISOString().slice(0, 10));
+  // Each stored day is already a JSON array: its bytes are passed straight through. Parsing and re-serialising 60 days
+  // (~10 MB) took 70-100 ms of CPU against the free plan's 10 ms.
+  const streams = await Promise.all(dates.map(d => env.SNAP.get(`fc:${d}`, 'stream')));
+  const enc = new TextEncoder();
+  const body = new ReadableStream({
+    async start(ctrl) {
+      ctrl.enqueue(enc.encode(`{"columns":${JSON.stringify(FORECAST_COLUMNS)},"days":{`));
+      let first = true;
+      for (let i = 0; i < dates.length; i++) {
+        if (!streams[i]) continue;
+        ctrl.enqueue(enc.encode(`${first ? '' : ','}"${dates[i]}":`)); first = false;
+        const reader = streams[i].getReader();
+        for (;;) { const { value, done } = await reader.read(); if (done) break; ctrl.enqueue(value); }
+      }
+      ctrl.enqueue(enc.encode('}}')); ctrl.close();
+    },
+  });
+  return new Response(body, { headers: { ...cors, 'Content-Type': 'application/json', 'Cache-Control': 'private, max-age=120' } });
 }
 
-function sightingAuth(request, env) {
+/** Constant-time comparison of a presented token with the secret (both hashed, so the lengths match). */
+export async function tokenMatches(given, secret) {
+  if (!given || !secret) return false;
+  const enc = new TextEncoder();
+  const [a, b] = await Promise.all([crypto.subtle.digest('SHA-256', enc.encode(given)), crypto.subtle.digest('SHA-256', enc.encode(secret))]);
+  const x = new Uint8Array(a), y = new Uint8Array(b); let diff = 0;
+  for (let i = 0; i < x.length; i++) diff |= x[i] ^ y[i];
+  return diff === 0;
+}
+
+async function sightingAuth(request, env) {
   const token = String(env.SIGHTING_TOKEN || '').trim();
   if (!token) return 'unconfigured';
   const auth = request.headers.get('Authorization') || '';
-  return auth === `Bearer ${token}` ? 'ok' : 'denied';
+  return auth.startsWith('Bearer ') && (await tokenMatches(auth.slice(7), token)) ? 'ok' : 'denied';
 }
 
 /** POST /api/sighting {t?, lat, lon, seen: 'eye'|'camera'|'none', note?} with Authorization: Bearer SIGHTING_TOKEN. */
 async function recordSighting(request, env, cors) {
-  const auth = sightingAuth(request, env);
+  const auth = await sightingAuth(request, env);
   if (auth === 'unconfigured') return json({ error: 'SIGHTING_TOKEN not set' }, 404, cors);
   if (auth !== 'ok') return json({ error: 'unauthorized' }, 401, cors);
   if (!env.SNAP) return json({ error: 'no store' }, 404, cors);
   let body; try { body = await request.json(); } catch { return json({ error: 'bad json' }, 400, cors); }
   const seen = ['eye', 'camera', 'none'].includes(body.seen) ? body.seen : null;
-  const lat = +body.lat, lon = +body.lon; const t = Number.isFinite(+body.t) ? +body.t : Date.now();
+  const lat = +body.lat, lon = +body.lon; const t = body.t === undefined || body.t === null ? Date.now() : +body.t;
   if (!seen || !Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) return json({ error: 'need seen (eye|camera|none), lat, lon' }, 400, cors);
+  if (!Number.isFinite(t) || Math.abs(t - Date.now()) > 2 * 86400e3) return json({ error: 't must be within two days of now' }, 400, cors);
   const row = { t: new Date(t).toISOString(), lat: +lat.toFixed(3), lon: +lon.toFixed(3), seen, note: String(body.note || '').slice(0, 140) };
   const key = `sightings:${row.t.slice(0, 7)}`;
   const rows = (await env.SNAP.get(key, 'json')) || [];
@@ -169,7 +198,7 @@ async function recordSighting(request, env, cors) {
 
 /** GET /api/sightings?months=N (Bearer SIGHTING_TOKEN): the logged sightings, newest month first. */
 async function listSightings(request, url, env, cors) {
-  const auth = sightingAuth(request, env);
+  const auth = await sightingAuth(request, env);
   if (auth === 'unconfigured') return json({ error: 'SIGHTING_TOKEN not set' }, 404, cors);
   if (auth !== 'ok') return json({ error: 'unauthorized' }, 401, cors);
   if (!env.SNAP) return json({ error: 'no store' }, 404, cors);

@@ -15,9 +15,14 @@ export async function loadScoreboard({ offline = false, cacheDir = join(here, 'c
   const file = join(cacheDir, 'cme_scoreboard.json');
   if (!offline || !existsSync(file)) {
     console.log('downloading CME scoreboard ...');
-    const res = await fetch(SCOREBOARD_URL);
-    if (!res.ok) throw new Error(`scoreboard HTTP ${res.status}`);
-    await writeFile(file, Buffer.from(await res.arrayBuffer()));
+    try {
+      const res = await fetch(SCOREBOARD_URL);
+      if (!res.ok) throw new Error(`scoreboard HTTP ${res.status}`);
+      await writeFile(file, Buffer.from(await res.arrayBuffer()));
+    } catch (err) {
+      if (!existsSync(file)) throw err;
+      console.error(`${err.message}: using the cached copy`); // a failed download must not throw the history away
+    }
   }
   return JSON.parse(await readFile(file, 'utf8'));
 }
@@ -42,7 +47,9 @@ export function scoreboardStats(cmes, { since = Date.UTC(2023, 0, 1) } = {}) {
       if (!Number.isFinite(err)) { const pt = Date.parse(p.predictedArrivalTime || ''); if (Number.isFinite(pt)) err = (pt - obsT) / 3600e3; }
       if (!Number.isFinite(err)) continue;
       let kp = null;
-      const lo = +p.predictedMaxKpLowerRange, hi = +p.predictedMaxKpUpperRange, obsKp = +c.maxKP;
+      // null, not 0: +null is 0, which counted 213 CMEs without an observed maximum as Kp misses (and ranges from 0)
+      const num = (v) => (v === null || v === undefined || v === '' ? NaN : +v);
+      const lo = num(p.predictedMaxKpLowerRange), hi = num(p.predictedMaxKpUpperRange), obsKp = num(c.maxKP);
       if (Number.isFinite(lo) && Number.isFinite(hi) && Number.isFinite(obsKp) && hi > 0) kp = obsKp >= lo && obsKp <= hi;
       const rec = { err, kp };
       add(p.predictedMethodName || 'unknown', rec);
@@ -72,8 +79,8 @@ export async function runScoreboard(opts = {}) {
     for (const m of out.methods.slice(0, 8)) console.log(`  ${m.name.padEnd(48)} n=${String(m.n).padStart(4)} MAE=${m.mae} h  within7h=${m.within7h}  kpHit=${m.kpHit ?? '-'}`);
     return out;
   } catch (err) {
-    console.error('scoreboard failed:', err.message);
-    await writeFile(outFile, JSON.stringify({ generated: new Date().toISOString(), source: SCOREBOARD_URL, error: String(err.message), methods: [] }, null, 1));
+    console.error(`scoreboard failed (${err.message}): ${outFile} left as it was`);
+    process.exitCode = 1;
     return null;
   }
 }

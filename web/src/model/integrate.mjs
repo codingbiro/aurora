@@ -53,9 +53,17 @@ export function analogEnsemble(history, tLast, horizonsMs, { members = 200, seed
   const last = history[Math.min(iLast, history.length - 1)];
   const xLast = Math.max(Number.isFinite(last?.coupling) ? last.coupling : NaN, floor);
   const maxLag = horizonsMs[horizonsMs.length - 1] - tLast;
-  const candidates = [];
+  // Start points at a level like the current one (within a factor 2, else 4): the path is applied as a ratio, and a
+  // quiet start that turned southward would multiply a storm-level value tenfold. Too few alike: no analog members,
+  // and the forecast uses the climatology members alone.
+  const all = [];
   for (let i = 0; i < history.length; i++) {
-    if (history[i].t + maxLag <= tLast && Number.isFinite(history[i].coupling)) candidates.push(i);
+    if (history[i].t + maxLag <= tLast && Number.isFinite(history[i].coupling)) all.push(i);
+  }
+  let candidates = [];
+  for (const band of [Math.LN2, 2 * Math.LN2]) {
+    candidates = all.filter(i => Math.abs(Math.log(Math.max(history[i].coupling, floor) / xLast)) < band);
+    if (candidates.length >= 50) break;
   }
   const rand = mulberry32(seed);
   const paths = [];
@@ -126,7 +134,8 @@ export function climatologyEnsemble(xLast, table, lagsMin, { members = 100, seed
       if (p <= pts[0][0]) v = pts[0][1] - (pts[0][0] - p) * (pts[1][1] - pts[0][1]) / (pts[1][0] - pts[0][0]);
       else if (p >= pts[4][0]) v = pts[4][1] + (p - pts[4][0]) * (pts[4][1] - pts[3][1]) / (pts[4][0] - pts[3][0]);
       else { let k = 0; while (p > pts[k + 1][0]) k++; const [p0, v0] = pts[k], [p1, v1] = pts[k + 1]; v = v0 + (v1 - v0) * (p - p0) / (p1 - p0); }
-      return Math.max(0, (Math.max(xLast, floor) + floor) * Math.exp(v) - floor);
+      // the table holds ln((b + floor) / (a + floor)), so this is its exact inverse
+      return Math.max(0, (Math.max(xLast, 0) + floor) * Math.exp(v) - floor);
     });
     out.push(path);
   }

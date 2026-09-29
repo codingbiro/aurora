@@ -135,10 +135,17 @@ describe('activity', () => {
     assert.ok(Number.isNaN(kpFromDriving(NaN, 0)));
     near(kpFromDriving(10000, NaN), 2.294, 1e-9, 'NaN viscous term treated as 0');
   });
-  test('hp30FromDriving: fallback to Kp coefficients, custom coefficients, cap at 12', () => {
+  test('hp30FromDriving: fallback to Kp coefficients, custom coefficients, the regressions clamp at 9', () => {
     near(hp30FromDriving(10000, 0, null), 2.294, 1e-9);
     near(hp30FromDriving(10000, 0, { intercept: 1, coupling: 1e-3, viscous: 0 }), 9, 1e-9, 'kpFromDriving clamps to 9 first');
-    assert.ok(hp30FromDriving(1e6, 0, { intercept: 0, coupling: 1, viscous: 0 }) <= 12);
+    assert.equal(hp30FromDriving(1e6, 0, { intercept: 0, coupling: 1, viscous: 0 }), 9);
+  });
+  test('hp30FromDriving: the storm branch blends in over one Kp unit above its own threshold', () => {
+    const general = { intercept: 0, coupling: 1e-3, viscous: 0 }, storm = { intercept: 1, coupling: 1e-3, viscous: 0, from: 3.5 };
+    near(hp30FromDriving(3000, 0, general, storm), 3, 1e-9, 'below the threshold: the general fit alone');
+    near(hp30FromDriving(4000, 0, general, storm), 4 + 0.5 * 1, 1e-9, 'half way into the ramp: half the storm fit');
+    near(hp30FromDriving(5000, 0, general, storm), 6, 1e-9, 'past the ramp: the storm fit');
+    near(hp30FromDriving(3000, 0, general, { ...storm, from: undefined }), 3 + 0.5, 1e-9, 'without a threshold: 2.5, as before');
   });
   test('clamp, blend, gScale, kpThirds', () => {
     assert.equal(clamp(5, 0, 3), 3); assert.equal(clamp(-1, 0, 3), 0); assert.equal(clamp(2, 0, 3), 2);

@@ -1,9 +1,12 @@
 // SVG charts built with D3 (global `d3`). Every chart: one y-scale per row, thin marks,
 // recessive grid, crosshair tooltip, colors from CSS tokens.
-import { fmt } from './format.mjs';
+import { fmt, esc } from './format.mjs';
 
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const MIN = 60e3, HOUR = 3600e3;
+let clipSeq = 0;
+/** Rough width of a 10 px label, for keeping labels near the right edge inside the chart. */
+const textWidth = (s, px = 10) => String(s).length * px * 0.56;
 
 let tooltipEl = null;
 function tooltip(container) {
@@ -21,11 +24,15 @@ function tooltip(container) {
 
 function svgIn(container, width, height) {
   d3.select(container).selectAll('svg').remove();
-  return d3.select(container).append('svg').attr('viewBox', `0 0 ${width} ${height}`).attr('width', '100%').attr('role', 'img');
+  const svg = d3.select(container).append('svg').attr('viewBox', `0 0 ${width} ${height}`).attr('width', '100%').attr('role', 'img');
+  // the figure's caption names the chart for screen readers
+  const cap = container.closest && container.closest('figure')?.querySelector('figcaption');
+  if (cap) { if (!cap.id) cap.id = `${container.id || 'chart'}-caption`; svg.attr('aria-labelledby', cap.id); }
+  return svg;
 }
 
-function timeAxis(g, x, height) {
-  g.attr('class', 'axis').call(d3.axisBottom(x).ticks(d3.timeHour.every(1)).tickFormat(d => d3.utcFormat('%H:%M')(d)).tickSizeOuter(0));
+function timeAxis(g, x, height, width = 720) {
+  g.attr('class', 'axis').call(d3.axisBottom(x).ticks(d3.utcHour.every(width < 520 ? 2 : 1)).tickFormat(d3.utcFormat('%H:%M')).tickSizeOuter(0));
   g.selectAll('text').attr('fill', css('--ink-2'));
 }
 
@@ -35,7 +42,7 @@ function timeAxis(g, x, height) {
  *  kpFuture [{t, median, p10, p90}], kpObs [{t,kp}], hp30 [{t,value}], geospace [{t,kp}], xMin, xMax}
  */
 export function timelineChart(container, d) {
-  const width = Math.max(container.clientWidth || 720, 480);
+  const width = Math.max(container.clientWidth || 720, 320);
   const rows = [
     { key: 'imf', title: 'IMF Bz and Bt, nT', h: 90 },
     { key: 'speed', title: 'Solar wind speed, km/s', h: 70 },
@@ -47,11 +54,16 @@ export function timelineChart(container, d) {
   const svg = svgIn(container, width, height);
   const x = d3.scaleUtc().domain([d.xMin, d.xMax]).range([m.left, width - m.right]);
   const P = d.propagated.filter(r => r.t >= d.xMin && r.t <= d.xMax);
+  const hp30 = (d.hp30 || []).filter(h => h.t + 30 * MIN > d.xMin); // an interval is drawn from its start
   let y0 = m.top;
   const rowScales = {};
   for (const r of rows) {
-    const g = svg.append('g').attr('transform', `translate(0,${y0})`);
     const yTop = 14, yBot = r.h;
+    // marks stay inside their own row (the forecast band can reach far above the measured range); title and axis do not
+    const clipId = `clip-${++clipSeq}`;
+    svg.append('clipPath').attr('id', clipId).append('rect').attr('x', m.left).attr('y', yTop).attr('width', width - m.left - m.right).attr('height', yBot - yTop);
+    const ga = svg.append('g').attr('transform', `translate(0,${y0})`);
+    const g = svg.append('g').attr('transform', `translate(0,${y0})`).attr('clip-path', `url(#${clipId})`);
     const inner = [yBot, yTop];
     let series = [], y;
     if (r.key === 'imf') {
@@ -81,7 +93,7 @@ export function timelineChart(container, d) {
       line(g, P, x, y, p => p.coupling, css('--s1'), 2);
       series = [{ label: 'dΦ/dt', get: p => p.coupling, unit: '' }];
     } else if (r.key === 'kp') {
-      y = d3.scaleLinear().domain([0, Math.max(5, d3.max([...(d.kpObs || []).map(k => k.kp), ...(d.kpFuture || []).map(k => k.p90), ...(d.hp30 || []).map(k => k.value)]) + 0.5 || 5)]).nice().range(inner);
+      y = d3.scaleLinear().domain([0, Math.min(9, Math.max(5, d3.max([...(d.kpObs || []).map(k => k.kp), ...(d.kpFuture || []).map(k => k.p90), ...hp30.map(k => k.value), ...(d.kpHind || []).map(k => k.kp), ...(d.geospace || []).map(k => k.kp)]) + 0.5 || 5))]).nice().range(inner);
       shading(g, x, d, yTop, yBot);
       for (let k = 1; k <= 9; k++) if (k <= y.domain()[1]) g.append('line').attr('class', 'grid').attr('x1', x.range()[0]).attr('x2', x.range()[1]).attr('y1', y(k)).attr('y2', y(k)).attr('stroke', css('--grid'));
       if (d.thresholds) {
@@ -95,22 +107,23 @@ export function timelineChart(container, d) {
         g.append('path').datum(d.kpFuture).attr('fill', 'none').attr('stroke', css('--s1')).attr('stroke-width', 2).attr('stroke-dasharray', '4 3').attr('d', d3.line().x(p => x(p.t)).y(p => y(p.median)));
       }
       if (d.kpHind && d.kpHind.length) line(g, d.kpHind, x, y, p => p.kp, css('--s1'), 2);
-      if (d.hp30 && d.hp30.length) step(g, d.hp30.map(h => ({ t: h.t, v: h.value })), x, y, css('--s2'), 30 * MIN);
+      if (hp30.length) step(g, hp30.map(h => ({ t: h.t, v: h.value })), x, y, css('--s2'), 30 * MIN);
       if (d.kpObs && d.kpObs.length) line(g, d.kpObs, x, y, p => p.kp, css('--s4'), 1.5);
       if (d.geospace && d.geospace.length) line(g, d.geospace, x, y, p => p.kp, css('--s7'), 1.5);
       series = [];
     }
-    g.append('text').attr('class', 'row-title').attr('x', m.left).attr('y', 10).attr('font-size', 11).text(r.title);
-    g.append('g').attr('class', 'axis').attr('transform', `translate(${m.left},0)`).call(d3.axisLeft(y).ticks(4).tickSizeOuter(0)).selectAll('text').attr('fill', css('--ink-2'));
+    ga.append('text').attr('class', 'row-title').attr('x', m.left).attr('y', 10).attr('font-size', 11).text(r.title);
+    ga.append('g').attr('class', 'axis').attr('transform', `translate(${m.left},0)`).call(d3.axisLeft(y).ticks(4).tickSizeOuter(0)).selectAll('text').attr('fill', css('--ink-2'));
     rowScales[r.key] = { y, y0, series };
     y0 += r.h + gap;
   }
-  timeAxis(svg.append('g').attr('transform', `translate(0,${height - m.bottom + 4})`), x, height);
-  // now / L1 markers
+  timeAxis(svg.append('g').attr('transform', `translate(0,${height - m.bottom + 4})`), x, height, width);
+  // now / L1 markers; a label that would run off the right edge ends at its line instead, one line higher
   for (const [t, label] of [[d.now, 'now'], [d.tLast, 'measured at L1 until']]) {
     if (!Number.isFinite(t)) continue;
     svg.append('line').attr('x1', x(t)).attr('x2', x(t)).attr('y1', m.top).attr('y2', height - m.bottom + 4).attr('stroke', css('--ink')).attr('stroke-width', label === 'now' ? 1.5 : 1).attr('stroke-dasharray', label === 'now' ? null : '3 3').attr('opacity', 0.6);
-    svg.append('text').attr('x', x(t) + 3).attr('y', height - m.bottom - 2).attr('font-size', 10).attr('fill', css('--ink-2')).text(label);
+    const flip = x(t) + 3 + textWidth(label) > width - m.right;
+    svg.append('text').attr('x', flip ? x(t) - 3 : x(t) + 3).attr('text-anchor', flip ? 'end' : 'start').attr('y', height - m.bottom - (flip && label !== 'now' ? 14 : 2)).attr('font-size', 10).attr('fill', css('--ink-2')).text(label);
   }
   // crosshair
   const tip = tooltip(container);
@@ -147,7 +160,7 @@ function step(g, data, x, y, color, width) {
  * Boundary vs observer: horizons [{h, boundary{median,p10,p90,ovation}, margin, pVisible}], observerMlat, allowance.
  */
 export function boundaryChart(container, horizons, observerMlat, allowance = 8, tiers = null) {
-  const width = Math.max(container.clientWidth || 720, 480), height = 200;
+  const width = Math.max(container.clientWidth || 720, 320), height = 200, narrow = width < 520;
   const m = { top: 12, right: 14, bottom: 28, left: 44 };
   const svg = svgIn(container, width, height);
   const x = d3.scaleLinear().domain([0, 120]).range([m.left, width - m.right]);
@@ -162,12 +175,16 @@ export function boundaryChart(container, horizons, observerMlat, allowance = 8, 
   svg.selectAll(null).data(ov).enter().append('circle').attr('cx', r => x(r.h)).attr('cy', r => y(r.boundary.ovation)).attr('r', 3.5).attr('fill', css('--s2')).attr('stroke', css('--surface')).attr('stroke-width', 1.5);
   svg.append('line').attr('x1', m.left).attr('x2', width - m.right).attr('y1', y(observerMlat)).attr('y2', y(observerMlat)).attr('stroke', css('--ink')).attr('stroke-width', 1.5);
   svg.append('text').attr('x', m.left + 4).attr('y', y(observerMlat) - 4).attr('font-size', 10).attr('fill', css('--ink')).text(`you: ${observerMlat.toFixed(1)}° magnetic`);
-  svg.append('text').attr('x', m.left + 4).attr('y', y(observerMlat + allowance) - 4).attr('font-size', 10).attr('fill', css('--ink-2')).text(tiers ? `camera from a dark site when the edge is below this line (${allowance}°)` : `visible low in the north when the edge is above this line (${allowance}° allowance)`);
+  // visible when the edge is equatorward of (below) observer + allowance: the edge line has to come down to this one
+  svg.append('text').attr('x', m.left + 4).attr('y', y(observerMlat + allowance) - 4).attr('font-size', 10).attr('fill', css('--ink-2'))
+    .text(tiers ? (narrow ? `camera: edge below this line (${allowance}°)` : `camera from a dark site when the edge is below this line (${allowance}°)`) : (narrow ? `low in the north: edge below this line` : `visible low in the north when the edge is below this line (${allowance}° allowance)`));
   if (tiers) for (const [name, allow] of [['naked eye, dark site', tiers.eyeDark], ['naked eye, city', tiers.eyeCity]]) {
     svg.append('line').attr('x1', m.left).attr('x2', width - m.right).attr('y1', y(observerMlat + allow)).attr('y2', y(observerMlat + allow)).attr('stroke', css('--ink-2')).attr('stroke-dasharray', '2 4');
     svg.append('text').attr('x', width - m.right - 4).attr('y', y(observerMlat + allow) - 3).attr('text-anchor', 'end').attr('font-size', 10).attr('fill', css('--ink-2')).text(`${name} (${allow}°)`);
   }
-  svg.append('g').attr('class', 'axis').attr('transform', `translate(0,${height - m.bottom})`).call(d3.axisBottom(x).tickValues([0, 30, 60, 90, 120]).tickFormat(v => `+${v} min`).tickSizeOuter(0)).selectAll('text').attr('fill', css('--ink-2'));
+  const bx = svg.append('g').attr('class', 'axis').attr('transform', `translate(0,${height - m.bottom})`).call(d3.axisBottom(x).tickValues([0, 30, 60, 90, 120]).tickFormat(v => `+${v} min`).tickSizeOuter(0));
+  bx.selectAll('text').attr('fill', css('--ink-2'));
+  bx.select('.tick:last-of-type text').attr('text-anchor', 'end');
   svg.append('g').attr('class', 'axis').attr('transform', `translate(${m.left},0)`).call(d3.axisLeft(y).ticks(5).tickFormat(v => `${v}°`).tickSizeOuter(0)).selectAll('text').attr('fill', css('--ink-2'));
   const tip = tooltip(container);
   svg.selectAll(null).data(horizons).enter().append('rect').attr('x', r => x(r.h) - 5).attr('width', 10).attr('y', m.top).attr('height', height - m.top - m.bottom).attr('fill', 'transparent')
@@ -194,14 +211,14 @@ export function substormChart(container, stations, now, lastOnset) {
     g.append('text').attr('x', 2).attr('y', rowH > 36 ? 24 : 22).attr('font-size', 9).attr('fill', css('--muted')).text(`${s.mlat.toFixed(0)}°`);
   });
   if (lastOnset) svg.append('line').attr('x1', x(lastOnset)).attr('x2', x(lastOnset)).attr('y1', m.top).attr('y2', height - m.bottom).attr('stroke', css('--s2')).attr('stroke-dasharray', '3 3');
-  timeAxis(svg.append('g').attr('transform', `translate(0,${height - m.bottom + 2})`), x, height);
+  timeAxis(svg.append('g').attr('transform', `translate(0,${height - m.bottom + 2})`), x, height, width);
 }
 
 /**
  * Long-term Kp chart: {now, noaa [{t,kp,status}], gfz [{t, median, q25, q75}], thresholds {horizon, overhead}, cmes [{arrival, glancing, kp}], nights [{start,end}]}
  */
 export function kpForecastChart(container, d) {
-  const width = Math.max(container.clientWidth || 600, 420), height = 240;
+  const width = Math.max(container.clientWidth || 600, 320), height = 240, narrow = width < 560;
   const m = { top: 14, right: 14, bottom: 40, left: 36 };
   const svg = svgIn(container, width, height);
   const xMin = d.now - 12 * HOUR, xMax = Math.max(d.now + 72 * HOUR, d3.max(d.noaa, b => b.t + 3 * HOUR) || 0);
@@ -227,16 +244,17 @@ export function kpForecastChart(container, d) {
     if (Number.isFinite(c.kp?.k90) && Number.isFinite(c.kp?.k180)) {
       svg.append('line').attr('x1', x(c.arrival)).attr('x2', x(c.arrival)).attr('y1', y(c.kp.k90)).attr('y2', y(c.kp.k180)).attr('stroke', css('--s2')).attr('stroke-width', 5).attr('stroke-linecap', 'round');
     }
-    svg.append('text').attr('x', x(c.arrival) + 4).attr('y', m.top + 10 + ci * 12).attr('font-size', 10).attr('fill', css('--ink')).text(`CME ${fmt.hm(c.arrival)}Z${c.glancing ? ' glancing' : ''}`);
+    const label = `CME ${fmt.hm(c.arrival)}Z${c.glancing ? ' glancing' : ''}`, flip = x(c.arrival) + 4 + textWidth(label) > width - m.right;
+    svg.append('text').attr('x', flip ? x(c.arrival) - 4 : x(c.arrival) + 4).attr('text-anchor', flip ? 'end' : 'start').attr('y', m.top + 10 + ci * 12).attr('font-size', 10).attr('fill', css('--ink')).text(label);
   });
   svg.append('line').attr('x1', x(d.now)).attr('x2', x(d.now)).attr('y1', m.top).attr('y2', height - m.bottom).attr('stroke', css('--ink')).attr('opacity', 0.6);
-  svg.append('g').attr('class', 'axis').attr('transform', `translate(0,${height - m.bottom})`).call(d3.axisBottom(x).ticks(d3.utcHour.every(12)).tickFormat(d3.utcFormat('%a %H:%M')).tickSizeOuter(0)).selectAll('text').attr('fill', css('--ink-2'));
+  svg.append('g').attr('class', 'axis').attr('transform', `translate(0,${height - m.bottom})`).call(d3.axisBottom(x).ticks(narrow ? d3.utcDay.every(1) : d3.utcHour.every(12)).tickFormat(d3.utcFormat(narrow ? '%a %d' : '%a %H:%M')).tickSizeOuter(0)).selectAll('text').attr('fill', css('--ink-2'));
   svg.append('g').attr('class', 'axis').attr('transform', `translate(${m.left},0)`).call(d3.axisLeft(y).ticks(6).tickSizeOuter(0)).selectAll('text').attr('fill', css('--ink-2'));
   svg.append('text').attr('x', m.left).attr('y', height - 4).attr('font-size', 10).attr('fill', css('--muted')).text('UTC; shaded columns are the nights (16–06 UTC)');
   const tip = tooltip(container);
   svg.selectAll(null).data(d.noaa).enter().append('rect').attr('x', b => x(b.t)).attr('width', bw + 2).attr('y', m.top).attr('height', height - m.top - m.bottom).attr('fill', 'transparent')
     .on('pointerenter', (ev, b) => { const [px, py] = d3.pointer(ev, svg.node()); const g = (d.gfz || []).find(r => Math.abs(r.t - b.t) < 90 * MIN);
-      tip.show(px * (container.clientWidth / width), py * (container.clientWidth / width), `<div class="t">${fmt.dateUtc(b.t)} (+3 h)</div><table><tr><td>NOAA Kp (${b.status})</td><td class="v">${fmt.num(b.kp, 2)}</td></tr>${g ? `<tr><td>GFZ ensemble median</td><td class="v">${fmt.num(g.median, 2)}</td></tr><tr><td>GFZ 25–75%</td><td class="v">${fmt.num(g.q25, 1)}–${fmt.num(g.q75, 1)}</td></tr><tr><td>P(Kp≥5)</td><td class="v">${fmt.pct(g.pGe5)}</td></tr>` : ''}</table>`); })
+      tip.show(px * (container.clientWidth / width), py * (container.clientWidth / width), `<div class="t">${fmt.dateUtc(b.t)} (+3 h)</div><table><tr><td>NOAA Kp (${esc(b.status)})</td><td class="v">${fmt.num(b.kp, 2)}</td></tr>${g ? `<tr><td>GFZ ensemble median</td><td class="v">${fmt.num(g.median, 2)}</td></tr><tr><td>GFZ 25–75%</td><td class="v">${fmt.num(g.q25, 1)}–${fmt.num(g.q75, 1)}</td></tr><tr><td>P(Kp≥5)</td><td class="v">${fmt.pct(g.pGe5)}</td></tr>` : ''}</table>`); })
     .on('pointerleave', () => tip.hide());
 }
 
@@ -245,7 +263,7 @@ export function kpForecastChart(container, d) {
  * (recurrence [{t, v}], hourly), which reaches days beyond the end of the run.
  */
 export function enlilChart(container, rows, events, now, recurrence = []) {
-  const width = Math.max(container.clientWidth || 600, 420), height = 170;
+  const width = Math.max(container.clientWidth || 600, 320), height = 170;
   const m = { top: 12, right: 14, bottom: 28, left: 40 };
   const svg = svgIn(container, width, height);
   const R = rows.filter(r => r.t >= now - 2 * 86400e3), C = recurrence.filter(r => r.t >= now - 2 * 86400e3);
@@ -254,8 +272,10 @@ export function enlilChart(container, rows, events, now, recurrence = []) {
   const x = d3.scaleUtc().domain(d3.extent(all, r => r.t)).range([m.left, width - m.right]);
   const y = d3.scaleLinear().domain([Math.max(200, d3.min(all, r => r.v) - 30), d3.max(all, r => r.v) + 30]).nice().range([height - m.bottom, m.top]);
   svg.append('rect').attr('x', x(now)).attr('width', Math.max(0, x.range()[1] - x(now))).attr('y', m.top).attr('height', height - m.top - m.bottom).attr('fill', css('--shade-future'));
-  const clouds = R.filter(r => r.cloud > 0.1);
-  svg.selectAll(null).data(clouds).enter().append('rect').attr('x', r => x(r.t)).attr('width', 2).attr('y', m.top).attr('height', height - m.top - m.bottom).attr('fill', css('--s2')).attr('opacity', 0.35);
+  // CME ejecta in the run: one band per passage (a mark per 2-minute row stacked into an opaque block over the line)
+  const clouds = [];
+  for (const r of R) if (r.cloud > 0.1) { const c = clouds[clouds.length - 1]; if (c && r.t - c.end <= 10 * MIN) c.end = r.t; else clouds.push({ start: r.t, end: r.t }); }
+  svg.selectAll(null).data(clouds).enter().append('rect').attr('x', c => x(c.start)).attr('width', c => Math.max(2, x(c.end) - x(c.start))).attr('y', m.top).attr('height', height - m.top - m.bottom).attr('fill', css('--s5')).attr('opacity', 0.18);
   svg.append('g').call(d3.axisLeft(y).ticks(4).tickSize(-(width - m.left - m.right)).tickFormat('')).attr('transform', `translate(${m.left},0)`).selectAll('line').attr('stroke', css('--grid'));
   if (R.length) svg.append('path').datum(R).attr('fill', 'none').attr('stroke', css('--s2')).attr('stroke-width', 2).attr('d', d3.line().x(r => x(r.t)).y(r => y(r.v)));
   if (C.length) {
@@ -266,7 +286,8 @@ export function enlilChart(container, rows, events, now, recurrence = []) {
   events.filter(e => e.kind === 'hss' && e.peakT >= now - 6 * HOUR).forEach((e, i) => svg.append('text').attr('x', Math.max(m.left + 2, x(e.start) + 3)).attr('y', m.top + 10 + i * 12).attr('font-size', 10).attr('fill', css('--ink')).text(`ramp ${fmt.int(e.from)}→${fmt.int(e.to)} km/s by ${fmt.hm(e.peakT)}Z`));
   svg.append('line').attr('x1', x(now)).attr('x2', x(now)).attr('y1', m.top).attr('y2', height - m.bottom).attr('stroke', css('--ink')).attr('opacity', 0.6);
   const long = x.domain()[1] - x.domain()[0] > 3 * 86400e3;
-  svg.append('g').attr('class', 'axis').attr('transform', `translate(0,${height - m.bottom})`).call(d3.axisBottom(x).ticks(long ? d3.utcDay.every(1) : d3.utcHour.every(12)).tickFormat(d3.utcFormat(long ? '%a %d' : '%a %H:%M')).tickSizeOuter(0)).selectAll('text').attr('fill', css('--ink-2'));
+  const narrow = width < 460;
+  svg.append('g').attr('class', 'axis').attr('transform', `translate(0,${height - m.bottom})`).call(d3.axisBottom(x).ticks(long ? d3.utcDay.every(narrow ? 2 : 1) : d3.utcHour.every(narrow ? 24 : 12)).tickFormat(d3.utcFormat(long ? '%a %d' : '%a %H:%M')).tickSizeOuter(0)).selectAll('text').attr('fill', css('--ink-2'));
   svg.append('g').attr('class', 'axis').attr('transform', `translate(${m.left},0)`).call(d3.axisLeft(y).ticks(4).tickSizeOuter(0)).selectAll('text').attr('fill', css('--ink-2'));
   const tip = tooltip(container);
   const bis = d3.bisector(r => r.t).center;
@@ -287,7 +308,7 @@ export function enlilChart(container, rows, events, now, recurrence = []) {
  * now, xMin, xMax, local:{t, dx}|null, localLabel, baseline:{t0, t1}|null}
  */
 export function electrojetChart(container, d) {
-  const width = Math.max(container.clientWidth || 720, 480), height = 190;
+  const width = Math.max(container.clientWidth || 720, 320), height = 190;
   const m = { top: 14, right: 14, bottom: 26, left: 46 };
   const svg = svgIn(container, width, height);
   const x = d3.scaleUtc().domain([d.xMin, d.xMax]).range([m.left, width - m.right]);
@@ -320,7 +341,7 @@ export function electrojetChart(container, d) {
     svg.append('text').attr('x', x(o.t) + 3).attr('y', m.top + 9).attr('font-size', 9).attr('fill', css('--ink')).text(`${fmt.hm(o.t)}${o.status === 'provisional' ? '?' : ''}`);
   }
   if (Number.isFinite(d.now)) svg.append('line').attr('x1', x(d.now)).attr('x2', x(d.now)).attr('y1', m.top).attr('y2', height - m.bottom + 4).attr('stroke', css('--ink')).attr('stroke-width', 1.5).attr('opacity', 0.6);
-  svg.append('g').attr('class', 'axis').attr('transform', `translate(0,${height - m.bottom})`).call(d3.axisBottom(x).ticks(d3.utcHour.every(2)).tickFormat(d3.utcFormat('%H:%M')).tickSizeOuter(0)).selectAll('text').attr('fill', css('--ink-2'));
+  svg.append('g').attr('class', 'axis').attr('transform', `translate(0,${height - m.bottom})`).call(d3.axisBottom(x).ticks(d3.utcHour.every(width < 420 ? 3 : 2)).tickFormat(d3.utcFormat('%H:%M')).tickSizeOuter(0)).selectAll('text').attr('fill', css('--ink-2'));
   svg.append('g').attr('class', 'axis').attr('transform', `translate(${m.left},0)`).call(d3.axisLeft(y).ticks(5).tickFormat(v => `${v}`).tickSizeOuter(0)).selectAll('text').attr('fill', css('--ink-2'));
   svg.append('text').attr('x', m.left + 4).attr('y', m.top + 9).attr('font-size', 10).attr('fill', css('--ink-2')).text('nT');
   const tip = tooltip(container);
@@ -330,7 +351,7 @@ export function electrojetChart(container, d) {
     const [px, py] = d3.pointer(ev, svg.node()); const t = x.invert(px).getTime(); const p = pts[bis(pts, t)];
     if (!p || Math.abs(p.t - t) > 5 * MIN) { tip.hide(); return; }
     const L = d.local ? d.local.dx[d.local.t.indexOf(p.t)] : NaN;
-    tip.show(px * (container.clientWidth / width), py * (container.clientWidth / width), `<div class="t">${fmt.dateUtc(p.t)}</div><table><tr><td>IL</td><td class="v">${fmt.int(p.il)} nT</td><td>${p.st || ''}</td></tr><tr><td>IU</td><td class="v">${fmt.int(p.iu)} nT</td></tr>${Number.isFinite(L) ? `<tr><td>${d.localLabel || 'at you'}</td><td class="v">${fmt.int(L)} nT</td></tr>` : ''}</table>`);
+    tip.show(px * (container.clientWidth / width), py * (container.clientWidth / width), `<div class="t">${fmt.dateUtc(p.t)}</div><table><tr><td>IL</td><td class="v">${fmt.int(p.il)} nT</td><td>${esc(p.st || '')}</td></tr><tr><td>IU</td><td class="v">${fmt.int(p.iu)} nT</td></tr>${Number.isFinite(L) ? `<tr><td>${esc(d.localLabel || 'at you')}</td><td class="v">${fmt.int(L)} nT</td></tr>` : ''}</table>`);
   }).on('pointerleave', () => tip.hide());
 }
 
@@ -351,9 +372,19 @@ export function profileChart(container, d) {
     if (Number.isFinite(d.oval.peakMlat)) svg.append('line').attr('x1', m.left).attr('x2', width - m.right).attr('y1', y(d.oval.peakMlat)).attr('y2', y(d.oval.peakMlat)).attr('stroke', css('--aurora-4')).attr('stroke-dasharray', '2 3');
   }
   svg.append('line').attr('x1', x(0)).attr('x2', x(0)).attr('y1', m.top).attr('y2', height - m.bottom).attr('stroke', css('--axis'));
-  const bh = Math.max(4, Math.min(12, (height - m.top - m.bottom) / Math.max(1, d.profile.length) * 0.5));
+  // stations a fraction of a degree apart: bars no taller than the gap between them, labels pushed 10 px apart per side
+  const ys = d.profile.map(r => y(r.mlat)).sort((a, b) => a - b);
+  const minGap = ys.slice(1).reduce((mn, v, i) => Math.min(mn, v - ys[i]), Infinity);
+  const bh = Math.max(2, Math.min(12, (height - m.top - m.bottom) / Math.max(1, d.profile.length) * 0.5, minGap * 0.8));
   svg.selectAll(null).data(d.profile).enter().append('rect').attr('x', r => Math.min(x(0), x(r.dx))).attr('width', r => Math.abs(x(r.dx) - x(0))).attr('y', r => y(r.mlat) - bh / 2).attr('height', bh).attr('fill', r => (r.dx < 0 ? css('--s1') : css('--s4'))).attr('opacity', 0.85);
-  svg.selectAll(null).data(d.profile).enter().append('text').attr('x', r => (r.dx < 0 ? x(0) + 4 : x(0) - 4)).attr('text-anchor', r => (r.dx < 0 ? 'start' : 'end')).attr('y', r => y(r.mlat) + 3).attr('font-size', 9).attr('fill', css('--ink-2')).text(r => `${r.station} ${fmt.int(r.dx)}`);
+  const labelY = new Map();
+  for (const west of [true, false]) {
+    const side = d.profile.filter(r => (r.dx < 0) === west).map(r => ({ r, y: y(r.mlat) + 3 })).sort((a, b) => a.y - b.y);
+    for (let i = 1; i < side.length; i++) side[i].y = Math.max(side[i].y, side[i - 1].y + 10);
+    const over = side.length ? side[side.length - 1].y - (height - m.bottom - 2) : 0;
+    for (const q of side) labelY.set(q.r, over > 0 ? q.y - over : q.y);
+  }
+  svg.selectAll(null).data(d.profile).enter().append('text').attr('x', r => (r.dx < 0 ? x(0) + 4 : x(0) - 4)).attr('text-anchor', r => (r.dx < 0 ? 'start' : 'end')).attr('y', r => labelY.get(r)).attr('font-size', 9).attr('fill', css('--ink-2')).text(r => `${r.station} ${fmt.int(r.dx)}`);
   if (d.centre && Number.isFinite(d.centre.mlat)) {
     svg.append('line').attr('x1', m.left).attr('x2', width - m.right).attr('y1', y(d.centre.mlat)).attr('y2', y(d.centre.mlat)).attr('stroke', css('--s2')).attr('stroke-width', 1.5).attr('stroke-dasharray', d.centre.beyond ? '3 3' : null);
     svg.append('text').attr('x', width - m.right - 2).attr('y', y(d.centre.mlat) - 3).attr('text-anchor', 'end').attr('font-size', 9).attr('fill', css('--s2')).text(d.centre.beyond ? `electrojet beyond chain (${d.centre.beyond})` : `electrojet ${d.centre.mlat.toFixed(1)}°`);

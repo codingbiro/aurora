@@ -41,12 +41,14 @@ export class ProxyClient {
     if (!m.ok || !m.body) return { meta: m, data: [] };
     const b = m.body; const times = b['Time (UTC)'] || {};
     const col = (name) => b[name] || {};
+    const memberCols = Object.keys(b).filter(c => /^kp_\d+$/.test(c)); // the ensemble's runs, for night maxima
     const data = Object.keys(times).map(k => {
       const tm = String(times[k]).match(/(\d{2})-(\d{2})-(\d{4}) (\d{2}):(\d{2})/);
       const t = tm ? Date.UTC(+tm[3], +tm[2] - 1, +tm[1], +tm[4], +tm[5]) : NaN;
       const p45 = +col('prob 4-5')[k], p56 = +col('prob 5-6')[k], p67 = +col('prob 6-7')[k], p78 = +col('prob 7-8')[k], p8 = +col('prob >= 8')[k];
+      const members = memberCols.map(c => +b[c][k]).filter(Number.isFinite);
       return { t, min: +col('minimum')[k], q25: +col('0.25-quantile')[k], median: +col('median')[k], q75: +col('0.75-quantile')[k], max: +col('maximum')[k],
-        pGe4: p45 + p56 + p67 + p78 + p8, pGe5: p56 + p67 + p78 + p8, pGe6: p67 + p78 + p8, pGe7: p78 + p8, pGe8: p8 };
+        pGe4: p45 + p56 + p67 + p78 + p8, pGe5: p56 + p67 + p78 + p8, pGe6: p67 + p78 + p8, pGe7: p78 + p8, pGe8: p8, members: members.length === memberCols.length ? members : null };
     }).filter(r => Number.isFinite(r.t)).sort((a, b) => a.t - b.t);
     return { meta: m, data, lastModified: m.lastModified };
   }

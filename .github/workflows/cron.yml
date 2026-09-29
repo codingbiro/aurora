@@ -1,16 +1,22 @@
 name: Nowcast cron (fallback scheduler)
-# Calls the Worker's scheduled job through its token-protected endpoint. Cloudflare's own Cron Trigger
-# runs the same job every 5 minutes; this fallback runs the job every 30 minutes as a safety net (GitHub schedules can lag).
+# Calls the Worker's scheduled job through its token-protected endpoint. Cloudflare's own Cron Trigger runs the same
+# job every 5 minutes; this is the safety net and health check. The Worker skips the call when the scheduled run is
+# less than 4 minutes old, and the step fails (red) when the Worker errors or the job returns no state.
+# Off-peak minutes: GitHub drops many schedules that fire on the hour and half-hour.
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '7,37 * * * *'
   workflow_dispatch:
 jobs:
   run:
     runs-on: ubuntu-latest
     steps:
       - name: Trigger the nowcast job
+        shell: bash
         env:
           CRON_TOKEN: ${{ secrets.CRON_TOKEN }}
         run: |
-          curl -sS --fail --max-time 60 -H "Authorization: Bearer $CRON_TOKEN" https://aurora.birovince.com/api/cron | head -c 600; echo
+          set -euo pipefail
+          body=$(curl -sS --fail --max-time 60 -H "Authorization: Bearer $CRON_TOKEN" https://aurora.birovince.com/api/cron)
+          printf '%s\n' "${body:0:300}"
+          printf '%s' "$body" | jq -e '.ok == true and (.skipped != null or .state != null)' > /dev/null

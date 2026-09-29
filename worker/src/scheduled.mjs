@@ -29,12 +29,19 @@ function interp(xs, ys, x) { if (!xs || !xs.length) return NaN; if (x <= xs[0]) 
  * weight per lead from the blend calibration, scaled by the anchor's age; sigma is the calibrated spread.
  */
 export function anchorBlend(kpModel, anchorValue, anchorAgeMin, leadMin, blend = coefficients.blend) {
-  const hasAnchor = Number.isFinite(anchorValue) && Number.isFinite(anchorAgeMin) && anchorAgeMin < 90;
+  // the dashboard's rule: an Hp30 interval that ended more than 45 minutes ago is no anchor
+  const hasAnchor = Number.isFinite(anchorValue) && Number.isFinite(anchorAgeMin) && anchorAgeMin < 45;
   const fresh = hasAnchor ? Math.min(1, Math.max(0, 1 - Math.max(0, anchorAgeMin - 20) / 60)) : 0;
   const w = blend ? interp(blend.leads, blend.weight, leadMin) * fresh : 0;
   const centre = Number.isFinite(kpModel) ? (1 - w) * kpModel + w * (hasAnchor ? anchorValue : 0) : (hasAnchor ? anchorValue : NaN);
-  const sigma = blend ? interp(blend.leads, blend.sigma, leadMin) * (hasAnchor ? 1 : 1.15) : 0.75;
-  return { centre, sigma, w };
+  return { centre, sigma: blendSigma(blend, leadMin, hasAnchor), w };
+}
+
+/** Probability spread of the blend at a lead: its calibrated RMSE, or without an anchor the model's own RMSE. */
+export function blendSigma(blend, leadMin, hasAnchor) {
+  if (!blend) return 0.75;
+  if (!hasAnchor && Array.isArray(blend.modelRmse)) return interp(blend.leads, blend.modelRmse, leadMin);
+  return interp(blend.leads, blend.sigma, leadMin) * (hasAnchor ? 1 : 1.15);
 }
 
 /**
@@ -83,14 +90,15 @@ export function normalQuantile(p) {
 export async function fetchTruth(now, fetchFn = fetch) {
   const out = { hp30: null, dst: NaN, auroraWatch: null, tormestorpK: null };
   const iso = (ms) => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const opts = { signal: AbortSignal.timeout(8000) }; // a hanging upstream must not stretch the run into the next one
   const tasks = [
-    fetchFn(`https://kp.gfz.de/app/json/?start=${iso(now - 4 * 3600e3)}&end=${iso(now + 3600e3)}&index=Hp30`).then(r => r.json()).then(j => {
+    fetchFn(`https://kp.gfz.de/app/json/?start=${iso(now - 4 * 3600e3)}&end=${iso(now + 3600e3)}&index=Hp30`, opts).then(r => r.json()).then(j => {
       const rows = (j.datetime || []).map((d, i) => ({ t: Date.parse(d), value: j.Hp30[i] })).filter(r => Number.isFinite(r.t) && r.value >= 0 && r.t <= now);
       if (rows.length) { const last = rows[rows.length - 1]; out.hp30 = { value: +last.value, t: last.t, ageMin: (now - (last.t + 30 * 60e3)) / 60e3 }; }
     }).catch(() => {}),
-    fetchFn(KYOTO_DST).then(r => r.json()).then(j => { const rows = (j || []).map(r => ({ t: Date.parse(r.time_tag + (String(r.time_tag).endsWith('Z') ? '' : 'Z')), dst: +r.dst })).filter(r => Number.isFinite(r.t) && r.t <= now && Number.isFinite(r.dst)); const last = rows[rows.length - 1]; if (last && now - last.t < 3 * 3600e3) out.dst = last.dst; }).catch(() => {}),
-    fetchFn(AURORAWATCH).then(r => r.text()).then(x => { const m = x.match(/status_id="(\w+)"/); if (m) out.auroraWatch = m[1]; }).catch(() => {}),
-    fetchFn(TORMESTORP_K).then(r => r.text()).then(t => { const k = t.trim().split('\n').pop().trim().split(/\s+/).map(c => (/^\d$/.test(c) ? +c : null)); const last = k.filter(v => v !== null).pop(); if (last !== undefined) out.tormestorpK = last; }).catch(() => {}),
+    fetchFn(KYOTO_DST, opts).then(r => r.json()).then(j => { const rows = (j || []).map(r => ({ t: Date.parse(r.time_tag + (String(r.time_tag).endsWith('Z') ? '' : 'Z')), dst: +r.dst })).filter(r => Number.isFinite(r.t) && r.t <= now && Number.isFinite(r.dst)); const last = rows[rows.length - 1]; if (last && now - last.t < 3 * 3600e3) out.dst = last.dst; }).catch(() => {}),
+    fetchFn(AURORAWATCH, opts).then(r => r.text()).then(x => { const m = x.match(/status_id="(\w+)"/); if (m) out.auroraWatch = m[1]; }).catch(() => {}),
+    fetchFn(TORMESTORP_K, opts).then(r => r.text()).then(t => { const k = t.trim().split('\n').pop().trim().split(/\s+/).map(c => (/^\d$/.test(c) ? +c : null)); const last = k.filter(v => v !== null).pop(); if (last !== undefined) out.tormestorpK = last; }).catch(() => {}),
   ];
   await Promise.all(tasks);
   return out;
@@ -122,29 +130,40 @@ export function shouldAlert(observer, state, env = {}) {
   return (state.kpLead ?? 0) >= observer.minKpLead;
 }
 
+/** KV read that never throws: undefined when the store failed (daily quota, outage), null when the key is missing. */
+async function kvGet(env, key, type) { try { return await env.SNAP.get(key, type); } catch (err) { console.error(`KV get ${key}:`, err); return undefined; } }
+/** KV write that never throws, so a full quota can cost the log but never the alerts. */
+async function kvPut(env, key, value, opts) { try { await env.SNAP.put(key, value, opts); return true; } catch (err) { console.error(`KV put ${key}:`, err); return false; } }
+
+/** Alert text with the delivery outcome only: /api/state is public, and ntfy's reply names the topic (its password). */
+const alertOutcome = (result) => ({ ok: result.ok, channels: result.results.map(r => ({ channel: r.channel, ok: r.ok, status: r.status, attempts: r.attempts })) });
+
 export async function runScheduled(env, scheduledTime = Date.now()) {
   if (!env.SNAP) return null; // no KV binding configured: nothing to do
   const now = scheduledTime || Date.now();
-  const res = await fetch(PROPAGATED);
+  const res = await fetch(PROPAGATED, { signal: AbortSignal.timeout(10000) });
   if (!res.ok) return null;
   const fresh = parsePropagated(await res.json());
-  const prev = (await env.SNAP.get(HIST_KEY, 'json')) || [];
+  // The latest state and the rolling driving history share one value: with the forecast log that is two writes a run,
+  // 576 a day, inside the free plan's 1,000 (four writes a run were 1,152 and failed every evening).
+  const prevState = await kvGet(env, STATE_KEY, 'json');
+  const prev = prevState?.rolling || (await kvGet(env, HIST_KEY, 'json')) || [];
   const map = new Map(prev.map(r => [r.t, r]));
   for (const r of fresh) map.set(r.t, { t: r.t, coupling: round(r.coupling, 0), viscous: round(r.viscous, 0), bz: r.bz, speed: r.speed, ekl: round(r.ekl, 2) });
   const cutoff = now - 6 * 3600e3;
   const rolling = [...map.values()].filter(r => r.t >= cutoff).sort((a, b) => a.t - b.t);
-  await env.SNAP.put(HIST_KEY, JSON.stringify(rolling));
 
   const mag = new MagneticCoordinates(grid, mltRef);
   const tLast = rolling.length ? rolling[rolling.length - 1].t : now;
-  const drivingNow = weightedRecentAverage(rolling, Math.min(now, tLast + 60e3), 'coupling', { minHours: 1 }).value; // the rolling window fills up over the first hours
-  const drivingLead = weightedRecentAverage(rolling, tLast + 60e3, 'coupling', { minHours: 1 }).value; // includes everything already measured at L1
+  // the last measured minute normally arrives about 50 minutes from now; far behind, the feed has stalled
+  const stale = now - tLast > 15 * 60e3;
   const viscous = weightedRecentAverage(rolling, tLast + 60e3, 'viscous', { minHours: 1 }).value;
-  const kpNow = hp30FromDriving(drivingNow, viscous, coefficients.hp30, coefficients.hp30_storm), kpLead = hp30FromDriving(drivingLead, viscous, coefficients.hp30, coefficients.hp30_storm);
+  // driving integrated up to a time (the rolling window fills up over the first hours), frozen after the last measured minute
+  const kpAt = (T) => hp30FromDriving(weightedRecentAverage(rolling, Math.min(T, tLast + 60e3), 'coupling', { minHours: 1 }).value, viscous, coefficients.hp30, coefficients.hp30_storm);
+  const kpNow = kpAt(now), kpLead = kpAt(tLast + 60e3); // kpLead: everything already measured at L1
   const truth = await fetchTruth(now).catch(() => ({ hp30: null, dst: NaN, auroraWatch: null, tormestorpK: null }));
 
   const states = [];
-  const trailRows = [];
   const fcRows = [];
   for (const o of resolveObservers(env)) {
     const obs = mag.convert(o.lat, o.lon);
@@ -154,12 +173,12 @@ export async function runScheduled(env, scheduledTime = Date.now()) {
     const regime = latitudeRegime(obs.mlat);
     const tiersByLead = {};
     for (const lead of FORECAST_LEADS) {
-      const T = now + lead * 60e3;
-      const bl = anchorBlend(T <= tLast + 60e3 ? kpLead : kpLead, truth.hp30 ? truth.hp30.value : NaN, truth.hp30 ? truth.hp30.ageMin : NaN, lead);
-      const tiers = tierForecast({ centre: bl.centre, sigma: bl.sigma, mlat: obs.mlat, mlt: mag.mlt(obs.mlon, new Date(T)), dst: truth.dst, regime });
+      const T = now + lead * 60e3, kpT = kpAt(T), mltT = mag.mlt(obs.mlon, new Date(T));
+      const bl = anchorBlend(kpT, truth.hp30 ? truth.hp30.value : NaN, truth.hp30 ? truth.hp30.ageMin : NaN, lead);
+      const tiers = tierForecast({ centre: bl.centre, sigma: bl.sigma, mlat: obs.mlat, mlt: mltT, dst: truth.dst, regime });
       if (!tiers) continue;
       tiersByLead[lead] = { centre: round(bl.centre, 2), sigma: round(bl.sigma, 2), ...Object.fromEntries(TIER_ORDER.map(k => [k, round(tiers[k], 3)])) };
-      fcRows.push([new Date(now).toISOString(), o.name, lead, round(bl.centre, 2), round(bl.sigma, 2), round(tiers.camera, 3), round(tiers.eyeDark, 3), round(tiers.eyeCity, 3), round(tiers.overhead, 3), round(kpLead, 2), truth.hp30 ? truth.hp30.value : null, truth.hp30 ? round(truth.hp30.ageMin, 0) : null, Number.isFinite(truth.dst) ? truth.dst : null, truth.auroraWatch, truth.tormestorpK, round(mag.mlt(obs.mlon, new Date(T)), 2)]);
+      fcRows.push([new Date(now).toISOString(), o.name, lead, round(bl.centre, 2), round(bl.sigma, 2), round(tiers.camera, 3), round(tiers.eyeDark, 3), round(tiers.eyeCity, 3), round(tiers.overhead, 3), round(kpT, 2), truth.hp30 ? truth.hp30.value : null, truth.hp30 ? round(truth.hp30.ageMin, 0) : null, Number.isFinite(truth.dst) ? truth.dst : null, truth.auroraWatch, truth.tormestorpK, round(mltT, 2)]);
     }
     const state = {
       name: o.name, lat: o.lat, lon: o.lon, mlat: round(obs.mlat, 2), mltLead: round(mltLead, 2), regime,
@@ -169,35 +188,37 @@ export async function runScheduled(env, scheduledTime = Date.now()) {
       alertOn: o.alertOn, minKpLead: o.minKpLead, alerts: !!(o.topic || hasTelegram(env) || hasWebhook(env)), channels: channelNames(o, env),
     };
     states.push(state);
-    trailRows.push([new Date(now).toISOString(), o.name, state.kpNow, state.kpLead, state.margin]);
 
-    if (shouldAlert(o, state, env)) {
+    // alerts before any log write; frozen solar wind (NOAA's product stopped advancing) never alerts
+    if (!stale && shouldAlert(o, state, env)) {
       const lastKey = `notify:last:${o.name}`;
-      const last = await env.SNAP.get(lastKey);
-      if (!last || now - Date.parse(last) > 2 * 3600e3) {
+      const last = await kvGet(env, lastKey);
+      let prevT = NaN, prevOk = true;
+      if (typeof last === 'string') { try { const j = JSON.parse(last); prevT = Date.parse(j.t); prevOk = j.ok !== false; } catch { prevT = Date.parse(last); } }
+      // at most one alert per place every 2 hours, a failed one retried after 15 minutes; with the store down, only
+      // the first run of each 2-hour slot may alert
+      const due = last === undefined ? now % (2 * 3600e3) < 5 * 60e3 : !Number.isFinite(prevT) || now - prevT > (prevOk ? 2 * 3600e3 : 15 * 60e3);
+      if (due) {
+        // claimed before sending, so a run overlapping this one (the GitHub fallback) sees it and stays quiet
+        await kvPut(env, lastKey, JSON.stringify({ t: new Date(now).toISOString(), ok: false }));
         const result = await sendAlert(o, `Aurora alert: ${o.name}`,
           `Modeled oval edge ${state.margin} deg from ${o.name} (${state.visible}). Kp now ${state.kpNow}, in about ${round((tLast - now) / 60e3, 0)} min ${state.kpLead}. ${env.DASHBOARD_URL || ''}`, env);
-        state.alertResult = result;
-        if (result.ok) { await env.SNAP.put(lastKey, new Date(now).toISOString()); state.alerted = true; }
-        else await env.SNAP.put('notify:lasterror', JSON.stringify({ time: new Date(now).toISOString(), place: o.name, ...result }));
+        state.alertResult = alertOutcome(result);
+        if (result.ok) { await kvPut(env, lastKey, JSON.stringify({ t: new Date(now).toISOString(), ok: true })); state.alerted = true; }
+        else await kvPut(env, 'notify:lasterror', JSON.stringify({ time: new Date(now).toISOString(), place: o.name, ...result }));
       }
     }
   }
 
-  const summary = { time: new Date(now).toISOString(), tLast: new Date(tLast).toISOString(), leadMin: round((tLast - now) / 60e3, 1), samples: rolling.length, kpNow: round(kpNow, 2), kpLead: round(kpLead, 2), observers: states };
-  await env.SNAP.put(STATE_KEY, JSON.stringify(summary));
-
-  // verification trail: one compact row per observer per run, one key per UTC day
-  const trailKey = `trail:${summary.time.slice(0, 10)}`;
-  const trail = (await env.SNAP.get(trailKey, 'json')) || [];
-  trail.push(...trailRows);
-  await env.SNAP.put(trailKey, JSON.stringify(trail), { expirationTtl: 60 * 86400 });
-  // forecast log for verification: tier probabilities per observer and lead with the truth signals seen at issue time
+  const summary = { time: new Date(now).toISOString(), tLast: new Date(tLast).toISOString(), leadMin: round((tLast - now) / 60e3, 1), stale, samples: rolling.length, kpNow: round(kpNow, 2), kpLead: round(kpLead, 2), observers: states };
+  await kvPut(env, STATE_KEY, JSON.stringify({ ...summary, rolling }));
+  // forecast log for verification: tier probabilities per observer and lead with the truth signals seen at issue time,
+  // appended as text (a day grows to ~200 KB; parsing and re-serialising it every run costs CPU for nothing)
   if (fcRows.length) {
     const fcKey = `fc:${summary.time.slice(0, 10)}`;
-    const fc = (await env.SNAP.get(fcKey, 'json')) || [];
-    fc.push(...fcRows);
-    await env.SNAP.put(fcKey, JSON.stringify(fc), { expirationTtl: 60 * 86400 });
+    const prevLog = await kvGet(env, fcKey);
+    const add = JSON.stringify(fcRows).slice(1, -1);
+    if (prevLog !== undefined) await kvPut(env, fcKey, typeof prevLog === 'string' && prevLog.length > 2 && prevLog.endsWith(']') ? `${prevLog.slice(0, -1)},${add}]` : `[${add}]`, { expirationTtl: 60 * 86400 });
   }
   return summary;
 }
@@ -240,7 +261,7 @@ export async function sendNtfy(topic, title, body, env = {}, { priority = 'high'
     } catch (err) {
       last = { ok: false, status: 0, text: String((err && err.message) || err), server, via, attempts: attempt + 1 };
     }
-    await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
+    if (attempt < 2) await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
   }
   return last;
 }

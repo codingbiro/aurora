@@ -273,7 +273,8 @@ export function substormState(stations, drive, now) {
   const ilNow = chain?.latest ? chain.latest.il : NaN;
   return {
     phase, phaseFactor: PHASE_FACTOR[phase], lastOnset, minutesSinceOnset: minutesSince, onsets, method, stations: perStation,
-    ekl, eklHour, minutesSouthward, loaded, powerRecent, loadFraction: powerRecent > 0 ? loaded / (162 * powerRecent) : NaN,
+    // without a known onset the loading start is assumed (3 h ago), so the store's fill would be a constant: unknown
+    ekl, eklHour, minutesSouthward, loaded, powerRecent, loadFraction: lastOnset && powerRecent > 0 ? loaded / (162 * powerRecent) : NaN,
     chain: chain ? { index: chain.index, baseline: chain.baseline, deviations: chain.deviations, profile: chain.profile, centre: chain.centre, latest: chain.latest, stations: chain.deviations.length } : null,
     ilNow, ilClass: ilClass(ilNow), ilMin: phaseInfo ? phaseInfo.ilMin : NaN, tMin: phaseInfo ? phaseInfo.tMin : NaN,
     pOnset30: onsetProbability(loaded, powerRecent, powerFuture, 30, { ekl }),

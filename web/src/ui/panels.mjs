@@ -1,12 +1,16 @@
 // DOM panels: verdict, tiles, freshness, night cards, CME cards, alerts, agreement, discussion, tables, method.
 import { el, clear, fmt } from './format.mjs';
 
+/** Set text only when it changed: the headline sits in a live region, and every rewrite is read out again. */
+function setText(node, text) { if (node.textContent !== text) node.textContent = text; }
+function setBadge(node, cls, text) { if (node.className !== cls) node.className = cls; setText(node, text); }
+
 export function renderVerdict(fc, obs, mag, extra = {}) {
   const badge = document.getElementById('verdict-badge'), head = document.getElementById('verdict-headline'), det = document.getElementById('verdict-detail');
-  if (!fc || !fc.ok) { badge.className = 'verdict-badge error'; badge.textContent = 'no data'; head.textContent = 'Could not compute a forecast'; det.textContent = fc?.reason || 'Waiting for the solar wind feed.'; return; }
-  const tone = fc.verdict.tone; badge.className = `verdict-badge ${tone}`;
-  badge.textContent = { good: 'go outside', maybe: 'worth a look', low: 'unlikely', none: 'quiet' }[tone] || tone;
-  head.textContent = fc.verdict.headline; det.textContent = fc.verdict.detail;
+  if (!fc || !fc.ok) { setBadge(badge, 'verdict-badge error', 'no data'); setText(head, 'Could not compute a forecast'); setText(det, fc?.reason || 'Waiting for the solar wind feed.'); return; }
+  const tone = fc.verdict.tone;
+  setBadge(badge, `verdict-badge ${tone}`, { good: 'go outside', maybe: 'worth a look', low: 'unlikely', none: 'quiet' }[tone] || tone);
+  setText(head, fc.verdict.headline); setText(det, fc.verdict.detail);
   const facts = clear(document.getElementById('site-facts'));
   const tt = extra.tierThresholds;
   const rows = [
@@ -71,7 +75,7 @@ export function renderNights(cards, extras) {
       el('div', { class: 'night-h', text: label }),
       el('div', { class: 'night-d', text: `${fmt.dayLocal(c.evening)} evening → morning` }),
       el('div', { class: 'night-p', text: fmt.pct(ph) }),
-      el('div', { class: 'night-row' }, [el('span', { text: 'low in the north' }), el('b', { text: fmt.pct(ph) })]),
+      el('div', { class: 'night-row' }, [el('span', { text: 'on camera, low in the north' }), el('b', { text: fmt.pct(ph) })]),
       el('div', { class: 'night-row' }, [el('span', { text: 'overhead' }), el('b', { text: fmt.pct(po) })]),
       el('div', { class: 'night-row' }, [el('span', { text: 'max forecast Kp' }), el('b', { text: fmt.num(c.kpMax, 2) })]),
       chips.length ? el('div', { class: 'chips' }, chips) : null,
@@ -89,7 +93,7 @@ export function renderCmes(cmes, now, source = 'ok') {
     box.append(el('div', { class: 'cme' }, [
       el('h3', { text: `Arrival ${fmt.dateUtc(c.arrival)} ± 7 h · ${c.glancing ? 'glancing blow' : 'direct hit'}${c.minor ? ', minor' : ''}` }),
       el('div', { class: 'meta', text: `launched ${fmt.dateUtc(c.start)} · ${fmt.int(c.speed)} km/s · half-angle ${fmt.int(c.halfAngle)}° · run ${fmt.dateUtc(c.modelCompleted)}` }),
-      el('p', { text: `${range}. ${c.arrival < now ? 'Arrival window is open now.' : `In ${((c.arrival - now) / 3600e3).toFixed(0)} h.`} ${c.note ? c.note.slice(0, 220) : ''}` }),
+      el('p', { text: `${range}. ${Math.abs(c.arrival - now) <= 7 * 3600e3 ? 'Arrival window is open now.' : c.arrival < now ? `The ±7 h window closed ${((now - c.arrival) / 3600e3 - 7).toFixed(0)} h ago.` : `In ${((c.arrival - now) / 3600e3).toFixed(0)} h.`} ${c.note ? c.note.slice(0, 220) : ''}` }),
     ]));
   }
 }
@@ -178,12 +182,11 @@ export function renderSubstormPanel(d) {
     midlatitude: `At ${obs.mlat.toFixed(1)}° magnetic latitude a substorm only matters once a storm has already expanded the oval to about ${(obs.mlat + 8).toFixed(0)}°: the panel above tracks that. This section shows what the Finnish chain sees, which is where the action is on ordinary nights.`,
   }[regime] || '';
   if (!outlook || !sub) {
-    badge.className = 'verdict-badge none'; badge.textContent = 'no data'; head.textContent = 'Waiting for magnetometer data'; det.textContent = d.proxyAvailable ? 'The Finnish IMAGE chain has not answered yet.' : 'Magnetometer feeds need the Worker proxy (or the INTERMAGNET fallback).';
+    setBadge(badge, 'verdict-badge none', 'no data'); setText(head, 'Waiting for magnetometer data'); setText(det, d.proxyAvailable ? 'The Finnish IMAGE chain has not answered yet.' : 'Magnetometer feeds need the Worker proxy (or the INTERMAGNET fallback).');
     note.textContent = ''; return;
   }
-  badge.className = `verdict-badge ${outlook.tone}`;
-  badge.textContent = { good: 'active', maybe: 'watch', low: 'quiet', info: 'context' }[outlook.tone] || outlook.tone;
-  head.textContent = outlook.headline; det.textContent = outlook.detail;
+  setBadge(badge, `verdict-badge ${outlook.tone}`, { good: 'active', maybe: 'watch', low: 'quiet', info: 'context' }[outlook.tone] || outlook.tone);
+  setText(head, outlook.headline); setText(det, outlook.detail);
   const r30 = outlook.horizons.find(r => r.h === 30), r60 = outlook.horizons.find(r => r.h === 60), r120 = outlook.horizons.find(r => r.h === 120);
   const centre = outlook.centre;
   const items = [

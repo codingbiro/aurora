@@ -50,8 +50,10 @@ describe('cron tier forecast', async () => {
   test('anchorBlend uses the calibrated weights and spreads', () => {
     const b0 = anchorBlend(3, 4, 10, 0, coefs.blend); near(b0.w, coefs.blend.weight[0], 1e-9); near(b0.centre, (1 - b0.w) * 3 + b0.w * 4, 1e-9); near(b0.sigma, coefs.blend.sigma[0], 1e-9);
     const b30 = anchorBlend(3, 4, 10, 30, coefs.blend); near(b30.w, coefs.blend.weight[1], 1e-9);
-    const old = anchorBlend(3, 4, 70, 30, coefs.blend); near(old.w, coefs.blend.weight[1] * (1 - 50 / 60), 1e-9, 'stale anchor weighs less');
-    const none = anchorBlend(3, NaN, NaN, 30, coefs.blend); assert.equal(none.w, 0); assert.equal(none.centre, 3); near(none.sigma, coefs.blend.sigma[1] * 1.15, 1e-9);
+    const older = anchorBlend(3, 4, 40, 30, coefs.blend); near(older.w, coefs.blend.weight[1] * (1 - 20 / 60), 1e-9, 'an older anchor weighs less');
+    const stale = anchorBlend(3, 4, 50, 30, coefs.blend); assert.equal(stale.w, 0, 'an interval that ended 45+ min ago is no anchor, as on the dashboard'); assert.equal(stale.centre, 3);
+    const none = anchorBlend(3, NaN, NaN, 30, coefs.blend); assert.equal(none.w, 0); assert.equal(none.centre, 3); near(none.sigma, coefs.blend.modelRmse[1], 1e-9, 'no anchor: the model\'s own error');
+    assert.equal(stale.sigma, none.sigma);
     assert.equal(anchorBlend(3, 4, 10, 30, null).sigma, 0.75);
   });
   test('tierForecast: Copenhagen tiers rise with the centre, storm floor and Dst edge apply', () => {
@@ -82,13 +84,16 @@ describe('cron tier forecast', async () => {
 
 describe('forecast log and sightings API', () => {
   const store = new Map();
-  const SNAP = { get: async (k, type) => { const v = store.get(k); return v === undefined ? null : type === 'json' ? JSON.parse(v) : v; }, put: async (k, v) => { store.set(k, v); } };
+  const SNAP = { get: async (k, type) => { const v = store.get(k); return v === undefined ? null : type === 'json' ? JSON.parse(v) : type === 'stream' ? new Response(v).body : v; }, put: async (k, v) => { store.set(k, v); } };
   const req = (path, init = {}) => new Request(`https://proxy.test${path}`, init);
   test('/api/trail returns the fc rows by day', async () => {
     const today = new Date().toISOString().slice(0, 10);
     store.set(`fc:${today}`, JSON.stringify([['2026-09-24T18:00:00.000Z', 'Copenhagen', 30, 2.1, 0.7, 0.01, 0, 0, 0, 2.0, 2.0, 5, -33, 'green', 3, 21.5]]));
+    const yesterday = new Date(Date.now() - 86400e3).toISOString().slice(0, 10);
+    store.set(`fc:${yesterday}`, JSON.stringify([['x', 'Tromsø', 10], ['y', 'Tromsø', 30]]));
     const r = await handleApi(req('/api/trail?days=3'), { SNAP });
-    assert.equal(r.status, 200); const j = await r.json(); assert.equal(j.columns.length, 16); assert.equal(j.days[today].length, 1);
+    assert.equal(r.status, 200); const j = await r.json(); assert.equal(j.columns.length, 16); assert.equal(j.days[today].length, 1); assert.equal(j.days[yesterday].length, 2);
+    assert.deepEqual(Object.keys(j.days), [today, yesterday], 'days without a log are left out');
     assert.equal((await handleApi(req('/api/trail'), {})).status, 404, 'no store');
   });
   test('sightings need the token and validate the body', async () => {
@@ -96,8 +101,11 @@ describe('forecast log and sightings API', () => {
     assert.equal((await handleApi(req('/api/sighting', { method: 'POST', body: '{}' }), { SNAP })).status, 404, 'unconfigured');
     assert.equal((await handleApi(req('/api/sighting', { method: 'POST', body: '{}' }), env)).status, 401);
     const bad = await handleApi(req('/api/sighting', { method: 'POST', headers: { Authorization: 'Bearer secret' }, body: JSON.stringify({ seen: 'maybe', lat: 55, lon: 12 }) }), env); assert.equal(bad.status, 400);
-    const ok = await handleApi(req('/api/sighting', { method: 'POST', headers: { Authorization: 'Bearer secret' }, body: JSON.stringify({ seen: 'eye', lat: 55.676, lon: 12.568, note: 'faint arc', t: Date.UTC(2026, 8, 24, 21, 0) }) }), env);
-    assert.equal(ok.status, 200); const j = await ok.json(); assert.equal(j.row.seen, 'eye'); assert.equal(j.row.t, '2026-09-24T21:00:00.000Z'); assert.equal(j.count, 1);
+    const t = Math.floor(Date.now() / MIN) * MIN - HOUR;
+    const ok = await handleApi(req('/api/sighting', { method: 'POST', headers: { Authorization: 'Bearer secret' }, body: JSON.stringify({ seen: 'eye', lat: 55.676, lon: 12.568, note: 'faint arc', t }) }), env);
+    assert.equal(ok.status, 200); const j = await ok.json(); assert.equal(j.row.seen, 'eye'); assert.equal(j.row.t, new Date(t).toISOString()); assert.equal(j.count, 1);
+    for (const far of [Date.now() + 5 * 86400e3, 8.64e15 + 1, 'soon']) assert.equal((await handleApi(req('/api/sighting', { method: 'POST', headers: { Authorization: 'Bearer secret' }, body: JSON.stringify({ seen: 'eye', lat: 55, lon: 12, t: far }) }), env)).status, 400, `t ${far} is refused`);
+    assert.equal((await handleApi(req('/api/sighting', { method: 'POST', headers: { Authorization: 'Bearer secre' }, body: '{}' }), env)).status, 401, 'a near-miss token');
     const list = await handleApi(req('/api/sightings?months=2', { headers: { Authorization: 'Bearer secret' } }), env); assert.equal(list.status, 200);
     assert.equal((await handleApi(req('/api/sightings'), env)).status, 401);
     assert.equal((await handleApi(req('/api/sighting', { method: 'PUT' }), env)).status, 405);
@@ -117,7 +125,8 @@ describe('timing smear', async () => {
     const r20s = smeared.horizons.find(r => r.h === 20), r20e = exact.horizons.find(r => r.h === 20);
     assert.equal(exact.ensemble.timingSdMin, 0); assert.equal(smeared.ensemble.timingSdMin, 10);
     assert.ok(r20s.coupling.p90 - r20s.coupling.p10 > r20e.coupling.p90 - r20e.coupling.p10 + 100, `smeared spread ${r20s.coupling.p10}-${r20s.coupling.p90} vs exact ${r20e.coupling.p10}-${r20e.coupling.p90}`);
-    const r60s = smeared.horizons.find(r => r.h === 60), r60e = exact.horizons.find(r => r.h === 60);
-    near(r60s.driving.median, r60e.driving.median, 0.05 * r60e.driving.median, 'well past the turning the medians agree');
+    // 100 minutes past the turning (at +60 the one-hour window still straddles it by ±20 min of smear)
+    const r120s = smeared.horizons.find(r => r.h === 120), r120e = exact.horizons.find(r => r.h === 120);
+    near(r120s.driving.median, r120e.driving.median, 0.05 * r120e.driving.median, 'well past the turning the medians agree');
   });
 });

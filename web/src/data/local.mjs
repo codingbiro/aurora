@@ -117,7 +117,9 @@ export function localSignal({ tormestorp, hel, aurorawatch }, now, windowMin = 3
   }
   const fresh = sources.filter(s => Number.isFinite(s.tier) && s.ageMin <= 25);
   const tier = fresh.length ? Math.max(...fresh.map(s => s.tier)) : NaN;
-  return { tier, label: Number.isFinite(tier) ? TIER_LABEL[tier] : 'no data', sources, fresh: fresh.length };
+  // ageMin of the sources that set the tier: the forecast floors its first half hour on a fresh signal only
+  const setting = fresh.filter(s => s.tier === tier);
+  return { tier, label: Number.isFinite(tier) ? TIER_LABEL[tier] : 'no data', sources, fresh: fresh.length, ageMin: setting.length ? Math.min(...setting.map(s => s.ageMin)) : NaN };
 }
 
 /** Fetchers. proxy: ProxyClient or null. Each returns {meta, ...parsed}. */

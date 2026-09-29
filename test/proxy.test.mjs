@@ -1,7 +1,7 @@
 // Unit tests for the Worker proxy handler. Only paths that never reach the network are exercised.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { handleApi, corsHeaders, ROUTES } from '../worker/src/proxy.mjs';
+import { handleApi, corsHeaders, ROUTES, tokenMatches } from '../worker/src/proxy.mjs';
 
 const req = (path, init = {}) => new Request(`https://proxy.test${path}`, init);
 
@@ -76,11 +76,28 @@ describe('handleApi (offline paths)', () => {
     assert.equal((await handleApi(req('/api/fmi/KEV/02'))).status, 404, 'length must be 01 or 24');
     assert.equal((await handleApi(req('/api/state'))).status, 404, 'state needs the KV binding');
   });
-  test('/api/state reads the KV binding when present', async () => {
-    const withState = await handleApi(req('/api/state'), { SNAP: { get: async () => JSON.stringify({ kpNow: 1 }) } });
+  test('/api/state reads the KV binding when present, without the driving history stored alongside', async () => {
+    const kv = (v) => ({ get: async (k, type) => (v === null ? null : type === 'json' ? JSON.parse(v) : v) });
+    const withState = await handleApi(req('/api/state'), { SNAP: kv(JSON.stringify({ kpNow: 1, rolling: [{ t: 1 }] })) });
     assert.equal(withState.status, 200); assert.deepEqual(await withState.json(), { kpNow: 1 });
-    const empty = await handleApi(req('/api/state'), { SNAP: { get: async () => null } });
+    const empty = await handleApi(req('/api/state'), { SNAP: kv(null) });
     assert.equal(await empty.text(), 'null');
+  });
+  test('GFZ index windows are widened to whole half hours and capped at 62 days', () => {
+    const gfz = ROUTES.find(r => r.match.test('/api/gfz/index'));
+    const u = (s, e) => gfz.upstream(null, new URL(`https://x/api/gfz/index?index=Hp30&start=${s}&end=${e}`));
+    assert.equal(u('2026-09-22T21:47:13Z', '2026-09-29T22:47:13Z'), 'https://kp.gfz.de/app/json/?start=2026-09-22T21:30:00Z&end=2026-09-29T23:00:00Z&index=Hp30', 'polls seconds apart share one upstream URL');
+    assert.equal(u('2026-09-22T21:47:13Z', '2026-09-29T22:47:13Z'), u('2026-09-22T21:48:02Z', '2026-09-29T22:48:02Z'));
+    assert.match(u('2026-07-30T00:00:00Z', '2026-09-29T00:00:00Z'), /start=2026-07-30T00:00:00Z/, '61 days is fine');
+    assert.equal(u('2026-07-01T00:00:00Z', '2026-09-29T00:00:00Z'), null, 'three months is refused');
+    assert.equal(u('2026-09-29T00:00:00Z', '2026-09-28T00:00:00Z'), null, 'end before start');
+  });
+  test('tokenMatches compares in constant time and rejects empty or different tokens', async () => {
+    assert.equal(await tokenMatches('secret', 'secret'), true);
+    assert.equal(await tokenMatches('secreT', 'secret'), false);
+    assert.equal(await tokenMatches('secret-and-more', 'secret'), false);
+    assert.equal(await tokenMatches('', 'secret'), false);
+    assert.equal(await tokenMatches('secret', ''), false);
   });
 });
 

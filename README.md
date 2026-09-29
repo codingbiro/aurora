@@ -17,7 +17,7 @@ Clouds are ignored; the sky line shows sun elevation, tonight's dark window and 
 ```bash
 npm install
 npm run dev          # http://localhost:8787  (static site + /api proxy in one Node process)
-npm test             # 166 offline unit tests (node:test)
+npm test             # 188 offline unit tests (node:test)
 npm run smoke        # pull live data and print the two-hour forecast for Copenhagen in the terminal
 npm run calibrate    # refit Hp30 coefficients, blend weights and spreads from GFZ + OMNI (downloads ~150 MB once, cached)
 node calibration/hindcast.mjs 2 52.42 23   # two-year hindcast of the decision for one magnetic latitude: base rates, skill by lead, Brier, reliability
@@ -34,9 +34,11 @@ npm run worker:kv        # once: creates the SNAP KV namespace; paste the id int
 npm run worker:deploy    # uploads assets + Worker, (re)creates the custom domain and cron trigger
 ```
 
+**Push to deploy.** `.github/workflows/deploy.yml` runs on every push to `main`: the tests first, then, only if they pass, the Worker with `wrangler deploy` and the GitHub Pages mirror. The Worker step needs one repository secret, a Cloudflare API token made from the "Edit Cloudflare Workers" template (`gh secret set CLOUDFLARE_API_TOKEN`); until it is set the step is skipped with a notice and `npm run worker:deploy` deploys by hand. Other branches and pull requests run the tests (`test.yml`).
+
 `web/config.js` picks the API origin: same origin on localhost, the custom domain and workers.dev; the workers.dev proxy from anywhere else.
 
-The scheduled job can also be run on demand: `GET /api/cron` with `Authorization: Bearer <CRON_TOKEN>` (secret set with `wrangler secret put CRON_TOKEN`); `.github/workflows/cron.yml` calls it every 30 minutes as a safety net; Cloudflare's own Cron Trigger runs it every 5 minutes.
+The scheduled job can also be run on demand: `GET /api/cron` with `Authorization: Bearer <CRON_TOKEN>` (secret set with `wrangler secret put CRON_TOKEN`; the token only counts in that header). It is skipped when the 5-minute Cloudflare cron ran less than 4 minutes earlier (add `?force=1` to run it anyway), so `.github/workflows/cron.yml`, which calls it at :07 and :37 as a safety net, never races the cron; that workflow fails when the Worker errors. Each run writes two KV values (the latest state with the 6-hour driving history, and the day's forecast log, appended as text), about 576 writes a day against the free plan's 1,000; alerts go out before the log is written and are claimed in KV first, so a full quota or an overlapping run can cost the log but never an alert, and a stalled solar-wind feed never alerts. `/api/state` carries only the delivery outcome of an alert (channel, ok, status), not the upstream replies, which name the ntfy topic.
 
 ### Alerts
 

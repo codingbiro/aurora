@@ -30,7 +30,7 @@ export function parseGeomagForecast(txt) {
     if (m) rows[key] = [+m[1], +m[2], +m[3]];
   }
   const year = issued ? new Date(issued).getUTCFullYear() : new Date().getUTCFullYear();
-  const dates = parseKpTable(txt, year);
+  const dates = parseKpTable(txt, year, issued);
   if (probHeader && rows.active) {
     const d0 = dates.days[0] ?? Date.UTC(year, MONTHS[probHeader[2]], +probHeader[1]);
     for (let i = 0; i < 3; i++) {
@@ -41,17 +41,24 @@ export function parseGeomagForecast(txt) {
   return out;
 }
 
-/** Parse the 3-column "HH-HHUT  a  b  c" Kp table found in both 3-day products. */
-export function parseKpTable(txt, year) {
+/**
+ * Parse the 3-column "HH-HHUT  a  b  c" Kp table found in both 3-day products. `year` is the issue year; with the
+ * issue time, a January column of a table issued in December falls in the next year (the forecast issued on
+ * 31 December covers 1-3 January).
+ */
+export function parseKpTable(txt, year, issued = null) {
   const header = txt.match(/\s+(\w{3}) (\d{1,2})\s+(\w{3}) (\d{1,2})\s+(\w{3}) (\d{1,2})\s*\n/);
   const kp = [], days = [];
   if (!header) return { kp, days };
+  const issuedMonth = Number.isFinite(issued) ? new Date(issued).getUTCMonth() : null;
+  let y = year;
   for (let i = 0; i < 3; i++) {
-    const mon = MONTHS[header[1 + 2 * i]]; let y = year;
+    const mon = MONTHS[header[1 + 2 * i]];
+    if (i === 0 && issuedMonth === 11 && mon === 0) y = year + 1;
+    // a column earlier in the year than the one before rolled over into the next year
+    if (i > 0 && mon < new Date(days[i - 1]).getUTCMonth()) y += 1;
     days.push(Date.UTC(y, mon, +header[2 + 2 * i]));
   }
-  // handle year wrap (Dec -> Jan)
-  for (let i = 1; i < 3; i++) if (days[i] < days[i - 1]) days[i] += 365 * DAY;
   const re = /(\d{2})-(\d{2})UT\s+([\d.]+)(?: \(G\d\))?\s+([\d.]+)(?: \(G\d\))?\s+([\d.]+)(?: \(G\d\))?/g;
   let m;
   while ((m = re.exec(txt))) {
@@ -70,7 +77,7 @@ export function parseThreeDayForecast(txt) {
   const maxExp = txt.match(/greatest expected 3 hr Kp for .*? is ([\d.]+)/s);
   const rat = txt.match(/Rationale:\s*(?:Rationale:\s*)?([\s\S]*?)\n\s*\n\s*B\./);
   return { issued, maxObserved: maxObs ? +maxObs[1] : NaN, maxExpected: maxExp ? +maxExp[1] : NaN,
-    rationale: rat ? rat[1].replace(/\s+/g, ' ').trim() : '', kp: parseKpTable(txt, year).kp };
+    rationale: rat ? rat[1].replace(/\s+/g, ' ').trim() : '', kp: parseKpTable(txt, year, issued).kp };
 }
 
 /** text/discussion.txt -> {issued, sections: {solarWind: {summary, forecast}, geospace: {...}, solar: {...}}} */
@@ -110,12 +117,14 @@ export function parseAlerts(list) {
     const msg = a.message || '';
     const code = (msg.match(/Space Weather Message Code:\s*(\w+)/) || [])[1] || a.product_id;
     const issue = Date.parse(a.issue_datetime.replace(' ', 'T') + 'Z');
-    const item = { code, productId: a.product_id, issued: issue, message: msg, kind: kindFromCode(code) };
+    const serial = (msg.match(/^Serial Number:\s*(\d+)/m) || [])[1], cancels = (msg.match(/Cancel Serial Number:\s*(\d+)/) || [])[1];
+    const item = { code, productId: a.product_id, issued: issue, message: msg, kind: kindFromCode(code), serial: serial ? +serial : null, cancels: cancels ? +cancels : null };
     const gm = code && code.match(/^WATA(\d\d)/);
     if (gm) {
       item.watchLevel = { '20': 1, '30': 2, '50': 3, '99': 4 }[gm[1]] ?? null;
       item.byDay = [...msg.matchAll(/(\w{3}) (\d{1,2}):\s+(G\d|None)/g)].map(m => ({ label: `${m[1]} ${m[2]}`, level: m[3] === 'None' ? 0 : +m[3][1] }));
       item.cancelled = /CANCEL WATCH/.test(msg);
+      item.supersedes = /SUPERSEDES ANY\/ALL PRIOR WATCHES/i.test(msg);
     }
     const km = code && code.match(/^(?:WARK|ALTK)0?(\d)/);
     if (km) item.kLevel = +km[1];
@@ -123,6 +132,11 @@ export function parseAlerts(list) {
     if (valid) item.validUntil = parseNoaaTime((msg.match(/(?:Now Valid Until|Valid To|Valid Until):\s*(\d{4} \w{3} \d{2} \d{4}) UTC/) || [])[1]);
     out.push(item);
   }
+  // A cancellation names the serial it cancels (same product), and a watch that "supersedes any/all prior watches"
+  // retires every earlier one: neither may still put a watch chip on a night card.
+  for (const c of out) if (c.cancels !== null) for (const a of out) if (a.productId === c.productId && a.serial === c.cancels) a.cancelled = true;
+  const lastWatch = Math.max(-Infinity, ...out.filter(a => a.kind === 'watch' && a.supersedes && !a.cancelled).map(a => a.issued));
+  for (const a of out) if (a.kind === 'watch' && a.issued < lastWatch) a.superseded = true;
   return out.sort((a, b) => b.issued - a.issued);
 }
 function kindFromCode(code = '') {
@@ -140,7 +154,7 @@ function parseNoaaTime(s) {
 
 /** Active geomagnetic watches and warnings (not cancelled, still valid or issued in the last 3 days). */
 export function activeGeomagneticMessages(alerts, now) {
-  return alerts.filter(a => (a.kind === 'watch' || a.kind === 'warning' || a.kind === 'alert') && /Geomagnetic/i.test(a.message) && !a.cancelled
+  return alerts.filter(a => (a.kind === 'watch' || a.kind === 'warning' || a.kind === 'alert') && /Geomagnetic/i.test(a.message) && !a.cancelled && !a.superseded
     && (a.validUntil ? a.validUntil >= now - 6 * 3600e3 : a.issued >= now - 3 * DAY));
 }
 
@@ -154,13 +168,13 @@ export function cmeArrivals(cmes, now, { horizonDays = 5 } = {}) {
     let best = null;
     for (const a of c.cmeAnalyses || []) {
       for (const e of a.enlilList || []) {
-        if (!e.estimatedShockArrivalTime) continue;
         const done = Date.parse(e.modelCompletionTime);
-        const score = (a.isMostAccurate ? 1e15 : 0) + done;
+        const score = (a.isMostAccurate ? 1e15 : 0) + (Number.isFinite(done) ? done : 0);
         if (!best || score > best.score) best = { score, a, e };
       }
     }
-    if (!best) continue;
+    // the latest most-accurate run decides: when it no longer predicts an arrival at Earth, an older run's does not count
+    if (!best || !best.e.estimatedShockArrivalTime) continue;
     const arrival = Date.parse(best.e.estimatedShockArrivalTime);
     if (arrival < now - 12 * 3600e3 || arrival > now + horizonDays * DAY) continue;
     out.push({
@@ -271,7 +285,7 @@ export function nightCards(now, kpForecast, probabilities, ensemble, thresholds,
       if (Number.isFinite(kpMax)) parts.push({ source: 'noaa-kp', value: probFromBins(bins, thr, sigma) });
       if (days.length) parts.push({ source: 'noaa-probabilities', value: Math.max(...days.map(d => dayProbabilityAtLeast(d, thr))) * nightShare(days.length) });
       const ens = (ensemble || []).filter(r => r.t >= start - 3 * 3600e3 && r.t < end);
-      if (ens.length) parts.push({ source: 'gfz-ensemble', value: 1 - ens.reduce((s, r) => s * (1 - ensembleProbAtLeast(r, thr)), 1) });
+      if (ens.length) parts.push({ source: 'gfz-ensemble', value: ensembleNightProb(ens, thr) });
       const vals = parts.filter(p => Number.isFinite(p.value));
       card.estimates[name] = { probability: vals.length ? vals.reduce((s, p) => s + p.value, 0) / vals.length : NaN, parts: vals, threshold: thr };
     }
@@ -285,6 +299,20 @@ function probFromBins(bins, thr, sigma) {
   const kpMax = Math.max(...bins.map(b => b.kp));
   const z = (kpMax - thr) / (sigma * 0.5513);
   return 1 / (1 + Math.exp(-z));
+}
+/**
+ * P(the night's maximum Kp reaches thr) from the GFZ ensemble: the share of members whose maximum over the night's bins
+ * does (the members are coherent runs; treating the bins as independent counted one stormy member once per bin).
+ * Without member columns: the largest per-bin probability, a lower bound.
+ */
+export function ensembleNightProb(rows, thr) {
+  const n = rows[0]?.members?.length;
+  if (n && rows.every(r => r.members?.length === n)) {
+    let hit = 0;
+    for (let k = 0; k < n; k++) if (Math.max(...rows.map(r => r.members[k])) >= thr - 1e-9) hit++;
+    return hit / n;
+  }
+  return Math.max(...rows.map(r => ensembleProbAtLeast(r, thr)));
 }
 function ensembleProbAtLeast(r, thr) {
   if (Number.isFinite(r.pGe4)) {

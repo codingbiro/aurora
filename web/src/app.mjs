@@ -14,7 +14,7 @@ import { pairWithHp30, mosFit, mosApply } from './model/mos.mjs';
 import { substormState, toMinutes, quietBaseline, substormOutlook, phaseIntervals, onsetMltDensity, ONSET_CLIMATOLOGY, extendSeries } from './model/substorm.mjs';
 import { shortTermForecast } from './model/shortterm.mjs';
 import { weightedRecentAverage } from './model/integrate.mjs';
-import { kpFromDriving } from './model/activity.mjs';
+import { hp30FromDriving } from './model/activity.mjs';
 import { parseGeomagForecast, parseThreeDayForecast, parseDiscussion, parse27Day, parseAlerts, activeGeomagneticMessages, cmeArrivals, enlilEvents, nightCards, recurrenceForecast, SOLAR_ROTATION_DAYS } from './model/longterm.mjs';
 import { timelineChart, boundaryChart, substormChart, kpForecastChart, enlilChart, electrojetChart, profileChart, onsetClockChart } from './ui/charts.mjs';
 import { polarMap, subsolarPoint } from './ui/map.mjs';
@@ -53,24 +53,38 @@ const state = {
   historyReady: false, snapshotAt: null,
 };
 
-const getJson = (url) => fetch(url).then(r => { if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`); return r.json(); });
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+function getJson(url) {
+  const ctrl = new AbortController(), timer = setTimeout(() => ctrl.abort(), 15e3);
+  return fetch(url, { signal: ctrl.signal }).then(r => { if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`); return r.json(); }).finally(() => clearTimeout(timer));
+}
+/**
+ * The magnetic grid and MLT table: nothing is drawn without them, so they are retried until they come (a flaky
+ * connection must not leave the page dead). The calibration coefficients load alongside and retry on their own.
+ */
 async function loadStatic() {
   for (let attempt = 1; ; attempt++) {
-    try {
-      const [grid, mltRef, coefs] = await Promise.all([getJson('data/aacgm_europe_grid.json'), getJson('data/mlt_reference.json'), getJson('data/coefficients.json').catch(() => null)]);
-      state.mag = new MagneticCoordinates(grid, mltRef);
-      state.coefficients = coefs;
+    const [grid, mltRef, coefs] = await Promise.allSettled([getJson('data/aacgm_europe_grid.json'), getJson('data/mlt_reference.json'), getJson('data/coefficients.json')]);
+    if (coefs.status === 'fulfilled') state.coefficients = coefs.value;
+    if (grid.status === 'fulfilled' && mltRef.status === 'fulfilled') {
+      state.mag = new MagneticCoordinates(grid.value, mltRef.value);
+      if (!state.coefficients) retryCoefficients();
       return;
-    } catch (err) {
-      if (attempt >= 4) throw err;
-      await new Promise(r => setTimeout(r, 500 * 2 ** attempt));
     }
+    console.error('static tables:', grid.reason || mltRef.reason);
+    await sleep(Math.min(30e3, 1000 * 2 ** Math.min(attempt, 5)));
+  }
+}
+async function retryCoefficients() {
+  for (let attempt = 1; attempt <= 30 && !state.coefficients; attempt++) {
+    await sleep(Math.min(60e3, 2000 * 2 ** Math.min(attempt, 5)));
+    try { state.coefficients = await getJson('data/coefficients.json'); invalidate(['model']); } catch { /* next attempt */ }
   }
 }
 
-function setObserver(lat, lon) {
+function setObserver(lat, lon, remember = true) {
   state.observer = { lat, lon };
-  try { localStorage.setItem('aurora.observer', JSON.stringify(state.observer)); } catch {}
+  if (remember) try { localStorage.setItem('aurora.observer', JSON.stringify(state.observer)); } catch {}
   if (!state.mag) return; // boot converts it once the magnetic grid has loaded
   state.obs = { lat, lon, ...state.mag.convert(lat, lon) };
   const thr = { horizon: kpForBoundary(state.obs.mlat + VIEW_ALLOWANCE_DEG, 23), overhead: kpForBoundary(state.obs.mlat, 23) };
@@ -104,12 +118,13 @@ const FEEDS = [
     } },
   { id: 'kp1m', label: 'NOAA est. Kp', every: MIN, parts: ['model'], fields: ['kp1m'], get: () => load.kp1m(), put: (r) => { if (!r.data.length) return false; state.kp1m = r.data; return true; } },
   { id: 'geospace', label: 'Geospace Kp', every: MIN, parts: ['model'], fields: ['geospaceKp'], get: () => load.geospaceKp(), put: (r) => { if (!r.data.length) return false; state.geospaceKp = r.data; return true; } },
-  { id: 'geoDst', label: 'Geospace Dst', quiet: true, every: MIN, parts: ['model'], fields: ['geoDst'], get: () => load.json(URLS.geospaceDst1h), put: (r) => { if (!Array.isArray(r.data)) return false; state.geoDst = dstRows(r.data); return true; } },
+  { id: 'geoDst', label: 'Geospace Dst', quiet: true, every: MIN, parts: ['model'], fields: ['geoDst'], get: () => load.json(URLS.geospaceDst1h), put: (r) => { const rows = Array.isArray(r.data) ? dstRows(r.data) : []; if (!rows.length) return false; state.geoDst = rows; return true; } },
   { id: 'hemi', label: 'hemispheric power', quiet: true, delay: 5e3, every: MIN, parts: [], fields: ['hemi'], get: () => load.hemiPower(), put: (r) => { if (!r.data.length) return false; state.hemi = r.data; return true; } },
   // 4.7 MB of JSON for the spacecraft name only (the L1 chip takes its time from the propagated file as well)
   { id: 'rtsw', label: 'L1 spacecraft status', quiet: true, delay: 5e3, every: 10 * MIN, parts: [], fields: ['rtsw'], get: () => load.rtsw(), put: (r) => { if (!r.data) return false; state.rtsw = r.data; return true; } },
   { id: 'stations', label: proxy.available ? 'FMI magnetometers' : 'INTERMAGNET', every: proxy.available ? MIN : 2 * MIN, parts: ['model'], fields: ['stations', 'stationSource'], afterGate: true,
     get: async () => {
+      await staticReady;
       if (!proxy.available) {
         const list = await Promise.all(GIN_STATIONS.map(async s => ({ ...s, r: await ginMinute(s.code.toLowerCase(), Date.now(), 24) })));
         return { meta: (list.find(s => s.r.meta.ok) || list[0]).r.meta, list };
@@ -142,20 +157,30 @@ const FEEDS = [
     get: () => { const now = Date.now(); return proxy.available ? proxy.gfzIndex('Hp30', now - 7 * 86400e3, now + HOUR) : iswaHp30(now, 168); },
     put: (r) => { if (!r.data.length) return false; state.hp30 = r.data.map(x => ({ t: x.t, value: x.value ?? x.hp30 })); return true; } },
   { id: 'hpo', label: 'GFZ Hpo forecast', quiet: true, proxy: true, every: 2 * MIN, parts: ['model'], fields: ['hpo'],
-    get: async () => { const f = await proxy.gfzHpoForecast('aceprop', 'Hp30'); return f.data.some(x => Number.isFinite(x.median)) ? f : proxy.gfzHpoForecast('mean_bars', 'Hp30'); },
-    put: (r) => { if (!r.meta.ok) return false; state.hpo = r.data; return true; } },
+    // the L1-driven run where it has values, the model mean elsewhere: aceprop holds -1 beyond its first hour, so a single
+    // finite value was not enough to use it alone (the forecast then found nothing at any horizon)
+    get: async () => {
+      const [ace, bars] = await Promise.all([proxy.gfzHpoForecast('aceprop', 'Hp30'), proxy.gfzHpoForecast('mean_bars', 'Hp30')]);
+      const byT = new Map(bars.data.map(r => [r.t, r]));
+      for (const r of ace.data) if (Number.isFinite(r.median)) byT.set(r.t, r);
+      return { meta: bars.meta.ok ? bars.meta : ace.meta, data: [...byT.values()].sort((a, b) => a.t - b.t) };
+    },
+    put: (r) => { if (!r.data.some(x => Number.isFinite(x.median))) return false; state.hpo = r.data; return true; } },
   { id: 'tormestorp', label: 'Tormestorp', proxy: true, every: 2 * MIN, parts: ['model'], fields: ['localRaw.tormestorp'],
-    get: () => loadLocal.tormestorp(proxy), put: (r) => { if (!r.series) return false; state.localRaw.tormestorp = { ...r, meta: lean(r.meta) }; return true; } },
+    get: () => loadLocal.tormestorp(proxy),
+    put: (r) => { if (!r.series) return false; const prev = state.localRaw.tormestorp; state.localRaw.tormestorp = { ...r, quiet: r.quiet || prev?.quiet || null, k: r.k?.length ? r.k : prev?.k || [], meta: lean(r.meta) }; return true; } },
   { id: 'hel', label: 'Hel (INTERMAGNET)', every: 2 * MIN, parts: ['model'], fields: ['localRaw.hel'],
     get: () => loadLocal.hel(Date.now()), put: (r) => { if (!r.series) return false; state.localRaw.hel = { ...r, meta: lean(r.meta) }; return true; } },
   { id: 'aurorawatch', label: 'AuroraWatch UK', every: 2 * MIN, parts: ['model'], fields: ['localRaw.aurorawatch'],
     get: () => loadLocal.aurorawatch(), put: (r) => { if (!r.status) return false; state.localRaw.aurorawatch = { ...r, meta: lean(r.meta) }; return true; } },
-  { id: 'ovation', label: 'OVATION', every: 5 * MIN, parts: ['model'], fields: ['ovation'], get: () => load.ovationText(), put: (r) => { if (!r.text) return false; state.ovation = parseOvationText(r.text); return true; } },
+  // Parsed results are checked before they replace anything: a 200 with an error page or a changed layout parses to
+  // nothing (OVATION to a grid of zeros), which would otherwise be stored, saved and shown as fresh.
+  { id: 'ovation', label: 'OVATION', every: 5 * MIN, parts: ['model'], fields: ['ovation'], get: () => load.ovationText(), put: (r) => { if (!r.text) return false; const o = parseOvationText(r.text); if (o.rows < 7000 || !Number.isFinite(o.obsTime)) return false; state.ovation = o; return true; } },
   { id: 'ovationGrid', label: 'OVATION map', quiet: true, every: 5 * MIN, parts: ['map'], fields: ['ovationGrid'], get: () => load.json(URLS.ovationGrid), put: (r) => { if (!r.data) return false; state.ovationGrid = r.data; return true; } },
-  { id: 'kyotoDst', label: 'Kyoto Dst', quiet: true, every: 15 * MIN, parts: ['model'], fields: ['kyotoDst'], get: () => load.json(URLS.kyotoDst), put: (r) => { if (!Array.isArray(r.data)) return false; state.kyotoDst = dstRows(r.data); return true; } },
+  { id: 'kyotoDst', label: 'Kyoto Dst', quiet: true, every: 15 * MIN, parts: ['model'], fields: ['kyotoDst'], get: () => load.json(URLS.kyotoDst), put: (r) => { const rows = Array.isArray(r.data) ? dstRows(r.data) : []; if (!rows.length) return false; state.kyotoDst = rows; return true; } },
   // a week of the Geospace model's Kp for the running correction against observed Hp30
   { id: 'geoWeek', label: 'Geospace Kp week', quiet: true, every: 15 * MIN, parts: ['model'], fields: ['geoWeek'], get: () => load.json(URLS.geospaceKp7d),
-    put: (r) => { if (!Array.isArray(r.data)) return false; const now = Date.now(); state.geoWeek = r.data.map(x => ({ t: tagTime(x.model_prediction_time || x.time_tag), kp: +(x.k ?? x.kp) })).filter(x => Number.isFinite(x.t) && Number.isFinite(x.kp) && x.t <= now); return true; } },
+    put: (r) => { if (!Array.isArray(r.data)) return false; const now = Date.now(); const rows = r.data.map(x => ({ t: tagTime(x.model_prediction_time || x.time_tag), kp: +(x.k ?? x.kp) })).filter(x => Number.isFinite(x.t) && Number.isFinite(x.kp) && x.t <= now); if (!rows.length) return false; state.geoWeek = rows; return true; } },
   { id: 'tgo', label: 'TGO K-index', quiet: true, proxy: true, every: 15 * MIN, parts: ['model'], fields: ['tgo'],
     get: async () => { const site = nearestTgo(state.observer.lat, state.observer.lon); return { ...(await proxy.tgoK(site.site)), site }; },
     put: (r) => {
@@ -164,10 +189,10 @@ const FEEDS = [
       state.tgo = { site: r.site.site, name: r.site.name, days: r.days, meta: lean(r.meta) }; return true;
     } },
   { id: 'kpForecast', label: 'Kp forecast', every: 15 * MIN, parts: ['long'], fields: ['kpForecast'], get: () => load.kpForecast(), put: (r) => { if (!r.data.length) return false; state.kpForecast = r.data; return true; } },
-  { id: 'geomag', label: 'NOAA storm probabilities', quiet: true, every: 15 * MIN, parts: ['long'], fields: ['geomag'], get: () => load.text(URLS.geomagForecast), put: (r) => { if (!r.text) return false; state.geomag = parseGeomagForecast(r.text); return true; } },
-  { id: 'threeDay', label: 'NOAA 3-day forecast', quiet: true, every: 15 * MIN, parts: ['long'], fields: ['threeDay'], get: () => load.text(URLS.threeDay), put: (r) => { if (!r.text) return false; state.threeDay = parseThreeDayForecast(r.text); return true; } },
-  { id: 'discussion', label: 'NOAA discussion', quiet: true, every: 15 * MIN, parts: ['long'], fields: ['discussion'], get: () => load.text(URLS.discussion), put: (r) => { if (!r.text) return false; state.discussion = parseDiscussion(r.text); return true; } },
-  { id: 'outlook27', label: '27-day outlook', quiet: true, every: 15 * MIN, parts: ['long'], fields: ['outlook'], get: () => load.text(URLS.outlook27), put: (r) => { if (!r.text) return false; state.outlook = parse27Day(r.text); return true; } },
+  { id: 'geomag', label: 'NOAA storm probabilities', quiet: true, every: 15 * MIN, parts: ['long'], fields: ['geomag'], get: () => load.text(URLS.geomagForecast), put: (r) => { if (!r.text) return false; const g = parseGeomagForecast(r.text); if (!g.probabilities.length) return false; state.geomag = g; return true; } },
+  { id: 'threeDay', label: 'NOAA 3-day forecast', quiet: true, every: 15 * MIN, parts: ['long'], fields: ['threeDay'], get: () => load.text(URLS.threeDay), put: (r) => { if (!r.text) return false; const t = parseThreeDayForecast(r.text); if (!t.kp.length && !t.rationale) return false; state.threeDay = t; return true; } },
+  { id: 'discussion', label: 'NOAA discussion', quiet: true, every: 15 * MIN, parts: ['long'], fields: ['discussion'], get: () => load.text(URLS.discussion), put: (r) => { if (!r.text) return false; const d = parseDiscussion(r.text); if (!Number.isFinite(d.issued)) return false; state.discussion = d; return true; } },
+  { id: 'outlook27', label: '27-day outlook', quiet: true, every: 15 * MIN, parts: ['long'], fields: ['outlook'], get: () => load.text(URLS.outlook27), put: (r) => { if (!r.text) return false; const o = parse27Day(r.text); if (!o.days.length) return false; state.outlook = o; return true; } },
   { id: 'alerts', label: 'NOAA alerts', quiet: true, every: 15 * MIN, parts: ['long'], fields: ['alerts'], get: () => load.json(URLS.alerts), put: (r) => { if (!Array.isArray(r.data)) return false; state.alerts = parseAlerts(r.data); return true; } },
   { id: 'scales', label: 'NOAA scales', quiet: true, every: 15 * MIN, parts: ['long'], fields: ['scales'], get: () => load.scales(), put: (r) => { if (!r.data) return false; state.scales = r.data; return true; } },
   { id: 'enlil', label: 'WSA-Enlil', every: 15 * MIN, parts: ['long'], fields: ['enlil'], get: () => load.json(URLS.enlil), put: (r) => { if (!Array.isArray(r.data)) return false; state.enlil = enlilEvents(r.data, Date.now()); return true; } },
@@ -194,7 +219,7 @@ const FEEDS = [
     } },
   { id: 'gfzEnsemble', label: 'GFZ ensemble', proxy: true, every: 15 * MIN, parts: ['long'], fields: ['gfzEnsemble'], get: () => proxy.gfzEnsemble('Kp'), put: (r) => { if (!r.data.length) return false; state.gfzEnsemble = r.data; return true; } },
   { id: 'metoffice', label: 'UK Met Office', quiet: true, proxy: true, every: 15 * MIN, parts: ['long'], fields: ['metoffice'], get: () => proxy.metOffice(), put: (r) => { if (!r.text) return false; state.metoffice = { text: r.text, saved: r.saved }; return true; } },
-  { id: 'sidc', label: 'SIDC', quiet: true, proxy: true, every: 15 * MIN, parts: ['long'], fields: ['sidc'], get: () => proxy.sidc(), put: (r) => { if (!r.text) return false; state.sidc = { text: r.text, predictions: r.predictions, geomagnetism: r.geomagnetism }; return true; } },
+  { id: 'sidc', label: 'SIDC', quiet: true, proxy: true, every: 15 * MIN, parts: ['long'], fields: ['sidc'], get: () => proxy.sidc(), put: (r) => { if (!r.text || (!r.predictions?.length && !r.geomagnetism)) return false; state.sidc = { text: r.text, predictions: r.predictions, geomagnetism: r.geomagnetism }; return true; } },
 ].filter(f => !f.proxy || proxy.available);
 
 // ---------------------------------------------------------------- saved data (instant first paint)
@@ -202,11 +227,15 @@ const FEEDS = [
 // substorm sections only use saved data younger than the reach of the one-hour solar wind file, so live minutes join
 // it without a hole; the three nights use saved data up to a day old. Ages are per field: data that kept failing to
 // refresh is never re-stamped as new.
-const KEEP_MODEL = 45 * MIN, KEEP_LONG = 24 * HOUR, FIRST_SAVE_MS = 10e3, SAVE_EVERY_MS = 5 * MIN;
+const KEEP_MODEL = 45 * MIN, KEEP_LONG = 24 * HOUR, FIRST_SAVE_MS = 10e3, SAVE_EVERY_MS = 15 * MIN;
 const KEEP = new Map();
 for (const f of FEEDS) for (const p of [...f.fields, `meta.${f.id}`]) KEEP.set(p, Math.max(KEEP.get(p) || 0, f.parts.includes('long') ? KEEP_LONG : KEEP_MODEL));
-// the map only draws northern cells with a value, so only those (and the two times) are saved
-const COMPACT = { ovationGrid: (g) => ({ 'Observation Time': g['Observation Time'], 'Forecast Time': g['Forecast Time'], coordinates: (g.coordinates || []).filter(c => c[1] >= 0 && c[2] > 0) }) };
+// The map only draws northern cells with a value, so only those (and the two times) are saved; of the solar wind only
+// the last 12 hours (the first paint needs 6, and the 7-day file is fetched again on every visit). About 4 MB a save.
+const COMPACT = {
+  ovationGrid: (g) => ({ 'Observation Time': g['Observation Time'], 'Forecast Time': g['Forecast Time'], coordinates: (g.coordinates || []).filter(c => c[1] >= 0 && c[2] > 0) }),
+  propagated: (rows) => rows.filter(r => r.t >= Date.now() - 12 * HOUR),
+};
 const fieldTimes = {}; // state path -> when its upstream last delivered it
 let unsaved = false, lastSave = 0, saveTimer = null;
 const bootAt = Date.now();
@@ -251,15 +280,18 @@ function sourceState(id, path) {
 // ---------------------------------------------------------------- compute + render
 function compute() {
   const now = Date.now();
+  // inputs that stopped updating must not describe "now": stations silent for 20 minutes, an OVATION run over 30 old
+  const stations = state.stations.filter(s => s.series?.t?.length && now - s.series.t[s.series.t.length - 1] <= 20 * MIN);
+  const ovation = state.ovation && Number.isFinite(state.ovation.obsTime) && now - state.ovation.obsTime <= 30 * MIN ? state.ovation : null;
   const drive = state.propagated.filter(r => r.t >= now - 6 * HOUR).map(r => ({ t: r.t, power: r.power, ekl: r.ekl, bz: r.bz }));
-  state.sub = state.stations.length ? substormState(state.stations, drive, now) : null;
+  state.sub = stations.length ? substormState(stations, drive, now) : null;
   // activity level for the onset-latitude climatology: the freshest observed index, else the driving
   const hpLast = state.hp30.length ? state.hp30[state.hp30.length - 1] : null, kpLast = state.kp1m.length ? state.kp1m[state.kp1m.length - 1] : null;
   let kpLevel = hpLast && now - (hpLast.t + 30 * MIN) < 45 * MIN ? hpLast.value : kpLast && now - kpLast.t < 30 * MIN ? kpLast.kp : NaN;
-  if (!Number.isFinite(kpLevel)) kpLevel = kpFromDriving(weightedRecentAverage(state.propagated, now, 'coupling', { minHours: 2 }).value, weightedRecentAverage(state.propagated, now, 'viscous', { minHours: 1 }).value);
+  if (!Number.isFinite(kpLevel)) kpLevel = modeledKp(now);
   const arrived = state.propagated.filter(r => r.t <= now && r.t >= now - HOUR && Number.isFinite(r.coupling));
   const couplingRecent = arrived.length ? arrived.reduce((s, r) => s + r.coupling, 0) / arrived.length : NaN;
-  state.substormOutlook = state.obs ? substormOutlook({ sub: state.sub, observer: state.obs, mag: state.mag, now, kp: kpLevel, ovation: state.ovation, couplingRecent, chainMlon: CHAIN_MLON }) : null;
+  state.substormOutlook = state.obs ? substormOutlook({ sub: state.sub, observer: state.obs, mag: state.mag, now, kp: kpLevel, ovation, couplingRecent, chainMlon: CHAIN_MLON }) : null;
   // ring current: the latest observed Kyoto Dst when it is less than three hours old, else NOAA's modeled Dst
   const kyotoLast = state.kyotoDst.filter(r => r.t <= now).slice(-1)[0], geoLast = state.geoDst.filter(r => r.t <= now).slice(-1)[0];
   state.dst = kyotoLast && now - kyotoLast.t < 3 * HOUR ? { value: kyotoLast.dst, t: kyotoLast.t, source: 'Kyoto' } : geoLast ? { value: geoLast.dst, t: geoLast.t, source: 'Geospace model' } : null;
@@ -268,8 +300,14 @@ function compute() {
   // Geospace Kp corrected by the running fit against observed Hp30 (model output statistics)
   state.geoMos = state.geoWeek.length && state.hp30.length ? mosFit(pairWithHp30(state.geoWeek, state.hp30)) : null;
   const geoCorrected = state.geoMos ? state.geospaceKp.map(r => ({ ...r, kp: mosApply(state.geoMos, r.kp) })) : state.geospaceKp;
-  state.fc = shortTermForecast({ now, propagated: state.propagated, ovation: state.ovation, kp1m: state.kp1m, geospaceKp: geoCorrected, hp30: state.hp30, hpoForecast: state.hpo,
+  state.fc = shortTermForecast({ now, propagated: state.propagated, ovation, kp1m: state.kp1m, geospaceKp: geoCorrected, hp30: state.hp30, hpoForecast: state.hpo,
     observer: state.obs, mag: state.mag, substorm: state.sub, coefficients: state.coefficients, outlook: state.substormOutlook, dst: state.dst ? state.dst.value : NaN, local: state.local });
+}
+
+/** Kp from the solar wind driving integrated to t, with the calibrated model the forecast uses. */
+function modeledKp(t) {
+  const c = state.coefficients;
+  return hp30FromDriving(weightedRecentAverage(state.propagated, t, 'coupling', { minHours: 2 }).value, weightedRecentAverage(state.propagated, t, 'viscous', { minHours: 1 }).value, c?.hp30, c?.hp30_storm);
 }
 
 function renderShort() {
@@ -284,10 +322,7 @@ function renderShort() {
   if (fc?.ok) {
     // hindcast Kp for the last 6 h from the same driving integral
     const kpHind = [];
-    for (let t = now - 6 * HOUR; t <= Math.min(now, fc.tLast); t += 10 * MIN) {
-      const d = weightedRecentAverage(state.propagated, t, 'coupling', { minHours: 2 }).value, v = weightedRecentAverage(state.propagated, t, 'viscous', { minHours: 1 }).value;
-      const kp = kpFromDriving(d, v); if (Number.isFinite(kp)) kpHind.push({ t, kp });
-    }
+    for (let t = now - 6 * HOUR; t <= Math.min(now, fc.tLast); t += 10 * MIN) { const kp = modeledKp(t); if (Number.isFinite(kp)) kpHind.push({ t, kp }); }
     const kpFuture = fc.horizons.map(r => ({ t: r.t, median: r.kp.median, p10: r.kp.p10, p90: r.kp.p90 }));
     const fut = fc.ensemble; const q = fut.quantiles || { p10: fut.central, p90: fut.central };
     timelineChart(document.getElementById('timeline-chart'), { propagated: state.propagated, now, tLast: fc.tLast, xMin: now - 6 * HOUR, xMax: now + 2 * HOUR,
@@ -339,22 +374,24 @@ function renderSubstorms() {
 
 function renderLong() {
   const now = Date.now();
-  const watches = state.alerts.filter(a => a.kind === 'watch' && !a.cancelled && a.issued >= now - 3 * 86400e3);
+  const watches = state.alerts.filter(a => a.kind === 'watch' && !a.cancelled && !a.superseded && a.issued >= now - 3 * 86400e3);
+  // the CME list was cut at fetch time and may come from saved data: arrivals more than 12 h ago are over
+  const cmes = state.cmes.filter(c => c.arrival >= now - 12 * HOUR);
   const cards = state.kpForecast.length ? nightCards(now, state.kpForecast.filter(b => b.status !== 'observed' || b.t >= now - 3 * HOUR), state.geomag?.probabilities || [], state.gfzEnsemble, state.thresholds) : [];
   state.cards = cards;
-  renderNights(cards, { watches, cmes: state.cmes, source: sourceState('kpForecast', 'kpForecast') });
+  renderNights(cards, { watches, cmes, source: sourceState('kpForecast', 'kpForecast') });
   if (state.kpForecast.length) {
-    kpForecastChart(document.getElementById('kp-chart'), { now, noaa: state.kpForecast.filter(b => b.t >= now - 12 * HOUR), gfz: state.gfzEnsemble, thresholds: state.thresholds, cmes: state.cmes, nights: cards.map(c => ({ start: c.start, end: c.end })) });
+    kpForecastChart(document.getElementById('kp-chart'), { now, noaa: state.kpForecast.filter(b => b.t >= now - 12 * HOUR), gfz: state.gfzEnsemble, thresholds: state.thresholds, cmes, nights: cards.map(c => ({ start: c.start, end: c.end })) });
     renderLegend('kp-legend', [{ label: 'NOAA 3-h Kp (dark = predicted, light = observed)', color: 'var(--s1)' }, { label: 'GFZ ensemble median and 25–75%', color: 'var(--s2)' }, { label: 'CME arrival ±7 h with Kp range', color: 'var(--s2)', kind: 'dash' }, { label: 'your thresholds', color: 'var(--s3)', kind: 'dash' }]);
   }
-  renderCmes(state.cmes, now, sourceState('donki', 'cmes'));
+  renderCmes(cmes, now, sourceState('donki', 'cmes'));
   const rec = state.recurrence.length ? recurrenceForecast(state.recurrence, now) : null;
   if (state.enlil || rec?.rows.length) {
     enlilChart(document.getElementById('enlil-chart'), state.enlil?.rows || [], state.enlil?.events || [], now, rec?.rows || []);
-    renderLegend('enlil-legend', [state.enlil ? { label: 'WSA-Enlil run (NOAA)', color: 'var(--s2)' } : null, rec?.rows.length ? { label: 'the solar wind one solar rotation ago (27-day recurrence)', color: 'var(--s1)', kind: 'dash' } : null].filter(Boolean));
+    renderLegend('enlil-legend', [state.enlil ? { label: 'WSA-Enlil run (NOAA)', color: 'var(--s2)' } : null, state.enlil?.rows.some(r => r.cloud > 0.1) ? { label: 'CME ejecta in the run', color: 'var(--s5)', kind: 'area' } : null, rec?.rows.length ? { label: 'the solar wind one solar rotation ago (27-day recurrence)', color: 'var(--s1)', kind: 'dash' } : null].filter(Boolean));
     const note = [];
     if (state.enlil) {
-      const hss = state.enlil.events.filter(e => e.kind === 'hss' && e.peakT >= now - 6 * HOUR), cl = state.enlil.events.filter(e => e.kind === 'cme-cloud');
+      const hss = state.enlil.events.filter(e => e.kind === 'hss' && e.peakT >= now - 6 * HOUR), cl = state.enlil.events.filter(e => e.kind === 'cme-cloud' && e.end >= now);
       note.push(`Run covers to ${fmt.dateUtc(state.enlil.horizonEnd)}.`, hss.length ? `Stream ramp ${fmt.int(hss[0].from)} → ${fmt.int(hss[0].to)} km/s peaking ${fmt.dateUtc(hss[0].peakT)}.` : 'No new high-speed stream ramp in the run.', cl.length ? `CME ejecta at Earth ${fmt.dateUtc(cl[0].start)} to ${fmt.dateUtc(cl[0].end)}.` : 'No CME ejecta in the run.');
     }
     // a rotation is 27 d 6.6 h, so the shifted hours fall at odd minutes: to the hour, which is all the precision there is
@@ -443,24 +480,27 @@ function flush() {
 // ---------------------------------------------------------------- boot
 function initialObserver() {
   let saved = null; try { saved = JSON.parse(localStorage.getItem('aurora.observer') || 'null'); } catch {}
-  // ?lat=69.649&lon=18.956 in the URL selects a place for this load (shareable links); otherwise the remembered one.
+  // ?lat=69.649&lon=18.956 in the URL selects a place for this load only (shareable links); otherwise the remembered one.
   const q = new URLSearchParams(location.search); const qLat = parseFloat(q.get('lat')), qLon = parseFloat(q.get('lon'));
-  if (Number.isFinite(qLat) && Number.isFinite(qLon) && Math.abs(qLat) <= 90 && Math.abs(qLon) <= 180) return { lat: qLat, lon: qLon };
+  if (Number.isFinite(qLat) && Number.isFinite(qLon) && Math.abs(qLat) <= 90 && Math.abs(qLon) <= 180) return { lat: qLat, lon: qLon, fromUrl: true };
   return saved && Number.isFinite(saved.lat) && Number.isFinite(saved.lon) ? { lat: saved.lat, lon: saved.lon } : { ...DEFAULT_OBSERVER };
 }
 
+let resolveStatic; const staticReady = new Promise(r => { resolveStatic = r; });
+
 async function boot() {
   renderMethod();
-  state.observer = initialObserver(); syncLocationForm();
+  const init = initialObserver(); state.observer = { lat: init.lat, lon: init.lon }; syncLocationForm();
   let openGate; const gate = new Promise(resolve => { openGate = resolve; });
   scheduler = new FeedScheduler(FEEDS, { gate: () => gate, onSettled });
   window.__aurora = state; window.__auroraFeeds = scheduler;
   scheduler.start(); // every request goes out now; results wait at the gate until the saved data is in place
-  const [snap] = await Promise.all([readSnapshot({ timeoutMs: 1000 }), loadStatic()]);
-  setObserver(state.observer.lat, state.observer.lon);
+  const statics = loadStatic().then(() => { setObserver(state.observer.lat, state.observer.lon, !init.fromUrl); resolveStatic(); invalidate(['model', 'map', 'long'], 0); });
+  const snap = await readSnapshot({ timeoutMs: 1000 });
   if (snap) hydrate(snap);
-  openGate();
+  openGate(); // live data flows from here; the sections draw once the magnetic grid is in (usually already)
   invalidate(['model', 'map', 'long'], 0);
+  await statics;
 }
 
 // ---------------------------------------------------------------- sightings (verification truth)
@@ -490,6 +530,8 @@ function syncLocationForm() {
 function applyObserver(lat, lon) {
   if (state.tgo && state.tgo.site !== nearestTgo(lat, lon).site) state.tgo = null;
   setObserver(lat, lon); syncLocationForm();
+  // a place picked here replaces one that came in a shared link, also on reload
+  if (location.search.includes('lat=')) try { history.replaceState(null, '', location.pathname + location.hash); } catch {}
   if (scheduler) { scheduler.runNow('tgo'); scheduler.retryFailed(); }
   invalidate(['model', 'map', 'long'], 0);
 }

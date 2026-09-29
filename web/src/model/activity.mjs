@@ -21,11 +21,12 @@ export function hp30FromDriving(couplingAvg, viscousAvg, coefs, stormCoefs = nul
   const c = coefs && Number.isFinite(coefs.coupling) ? coefs : NEWELL2008;
   const g = kpFromDriving(couplingAvg, viscousAvg, c);
   if (!Number.isFinite(g)) return NaN;
-  // The general fit under-predicts storms (bias about -0.55 for Hp30 >= 3 in calibration); blend toward
-  // the storm-only fit between 2.5 and 3.5.
-  if (stormCoefs && Number.isFinite(stormCoefs.coupling) && g > 2.5) {
+  // Above `from` (2.5 unless the coefficients say otherwise) blend over one Kp unit toward a fit made on the intervals
+  // the general fit predicts that high (calibration/run.mjs ships it only when it beats the general fit there).
+  const from = Number.isFinite(stormCoefs?.from) ? stormCoefs.from : 2.5;
+  if (stormCoefs && Number.isFinite(stormCoefs.coupling) && g > from) {
     const st = kpFromDriving(couplingAvg, viscousAvg, stormCoefs);
-    const w = Math.min(1, (g - 2.5) / 1.0);
+    const w = Math.min(1, (g - from) / 1.0);
     return Math.min(12, (1 - w) * g + w * st);
   }
   return Math.min(g, 12); // Hp30 is open-ended above 9

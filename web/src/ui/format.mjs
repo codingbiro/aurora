@@ -12,12 +12,14 @@ export const fmt = {
   signed: (x, d = 1) => (Number.isFinite(x) ? (x > 0 ? '+' : '') + x.toFixed(d) : '–'),
 };
 
+/** Escape text for the few places that build HTML strings (chart tooltips): upstream strings must never become markup. */
+export const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
 export function el(tag, attrs = {}, children = []) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
     if (k === 'class') e.className = v;
     else if (k === 'text') e.textContent = v;
-    else if (k === 'html') e.innerHTML = v;
     else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
     else if (v !== null && v !== undefined) e.setAttribute(k, v);
   }

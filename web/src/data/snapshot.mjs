@@ -40,12 +40,15 @@ export function freshEntries(snap, now, maxAge) {
 }
 
 let dbPromise = null;
+/** Forget the connection (closed by the browser, another tab's upgrade, a failed transaction): the next call reopens. */
+function dropDb(d) { try { d?.close(); } catch {} dbPromise = null; }
 function db() {
   if (!dbPromise) {
     dbPromise = new Promise((resolve, reject) => {
       const req = indexedDB.open(DB_NAME, 1);
       req.onupgradeneeded = () => req.result.createObjectStore(STORE);
-      req.onsuccess = () => { const d = req.result; d.onversionchange = () => d.close(); resolve(d); };
+      // iOS Safari drops connections of backgrounded pages ("Connection to Indexed Database server lost")
+      req.onsuccess = () => { const d = req.result; d.onversionchange = () => dropDb(d); d.onclose = () => dropDb(); resolve(d); };
       req.onerror = () => reject(req.error);
       req.onblocked = () => reject(new Error('indexedDB blocked'));
     }).catch(err => { dbPromise = null; throw err; });
@@ -62,7 +65,7 @@ export function readSnapshot({ timeoutMs = 1000 } = {}) {
       const req = d.transaction(STORE, 'readonly').objectStore(STORE).get(KEY);
       req.onsuccess = () => resolve(req.result || null);
       req.onerror = () => reject(req.error);
-    }));
+    })).catch(err => { dropDb(); throw err; });
   } catch { return Promise.resolve(null); }
   let timer;
   const timeout = new Promise(resolve => { timer = setTimeout(() => resolve(null), timeoutMs); });
@@ -80,5 +83,5 @@ export async function writeSnapshot(snap) {
       tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error);
     });
     return true;
-  } catch { return false; }
+  } catch { dropDb(); return false; }
 }

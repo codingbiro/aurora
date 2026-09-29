@@ -19,6 +19,8 @@ export async function polarMap(container, grid, observer, sun) {
   const size = Math.max(container.clientWidth || 360, 280);
   d3.select(container).selectAll('svg').remove();
   const svg = d3.select(container).append('svg').attr('viewBox', `0 0 ${size} ${size}`).attr('width', '100%').attr('role', 'img');
+  const cap = container.closest('figure')?.querySelector('figcaption');
+  if (cap) { if (!cap.id) cap.id = `${container.id || 'map'}-caption`; svg.attr('aria-labelledby', cap.id); }
   const proj = d3.geoAzimuthalEquidistant().rotate([0, -90]).clipAngle(50).translate([size / 2, size / 2]).scale(size / 2 / (50 * Math.PI / 180) * 0.98);
   const path = d3.geoPath(proj);
   svg.append('circle').attr('cx', size / 2).attr('cy', size / 2).attr('r', size / 2 * 0.98).attr('fill', css('--surface-2'));

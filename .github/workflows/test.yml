@@ -1,7 +1,8 @@
 name: Tests
+# Pushes to other branches and pull requests; main is tested by the Deploy workflow before it deploys.
 on:
   push:
-    branches: [main]
+    branches-ignore: [main]
   pull_request:
 jobs:
   test:
@@ -11,5 +12,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
       - run: npm ci
       - run: npm test

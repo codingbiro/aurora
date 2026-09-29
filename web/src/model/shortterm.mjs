@@ -1,8 +1,8 @@
 // Short-term (10 to 120 minute) forecast for one observer.
 import { weightedRecentAverage, meanBetween, analogEnsemble, climatologyEnsemble, quantile, lowerBound, mulberry32, gaussian } from './integrate.mjs';
-import { kpFromDriving, hp30FromDriving, blend } from './activity.mjs';
+import { hp30FromDriving, blend } from './activity.mjs';
 import { equatorwardBoundary, boundaryForKp, visibilityClass, VIEW_ALLOWANCE_DEG, TIERS, TIER_ORDER, dstBoundary, dstWeight } from './oval.mjs';
-import { PHASE_FACTOR, onsetProbability, latitudeRegime } from './substorm.mjs';
+import { PHASE_FACTOR, onsetProbability, latitudeRegime, localReachMlt } from './substorm.mjs';
 
 const MIN = 60e3, HOUR = 3600e3;
 export const DEFAULT_HORIZONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120];
@@ -30,6 +30,8 @@ export function shortTermForecast(inputs) {
   if (known.length < 60) return { ok: false, reason: 'not enough propagated solar wind data' };
   const tLast = known[known.length - 1].t;
   const leadMin = (tLast - now) / MIN;
+  // the last measured minute normally arrives 30 to 90 minutes from now; half an hour in the past, the feed has stalled
+  if (leadMin < -30) return { ok: false, reason: `The last solar wind measurement reached Earth ${Math.round(-leadMin)} min ago: the feed has stalled, so there is no forecast until it moves again.` };
   const lastRec = known[known.length - 1];
 
   // Ensemble of future coupling beyond the last measured arrival time (1-minute steps).
@@ -85,8 +87,8 @@ export function shortTermForecast(inputs) {
 
   // Current state (driving integrated to now)
   const drivingNow = weightedRecentAverage(known, Math.min(now, tLast + MIN), 'coupling', { minHours: 2 }).value;
-  const kpNow = kpFromDriving(drivingNow, viscousAvg(now));
   const hp30Coefs = coefficients?.hp30 || null, stormCoefs = coefficients?.hp30_storm || null;
+  const kpNow = hp30FromDriving(drivingNow, viscousAvg(now), hp30Coefs, stormCoefs); // the same calibrated model as every horizon
 
   const rows = [];
   for (const h of horizons) {
@@ -95,7 +97,8 @@ export function shortTermForecast(inputs) {
     const couplingMembers = members.map((p, m) => { const Ts = T - shifts[m]; const j = Math.round((Ts - futureTimes[0]) / MIN); return Ts <= tLast ? couplingAt(known, Ts) : p[Math.min(Math.max(j, 0), p.length - 1)]; });
     const drivingMembers = members.map((p, m) => avgForMember(p, T, shifts[m]));
     const visc = viscousAvg(T);
-    let kpMembers = drivingMembers.map(d => hp30FromDriving(d, visc, hp30Coefs, stormCoefs));
+    // members without two hours of driving history carry no information: left out, not counted as "not visible"
+    let kpMembers = drivingMembers.map(d => hp30FromDriving(d, visc, hp30Coefs, stormCoefs)).filter(Number.isFinite);
     const hpMembers = kpMembers.slice();
     const kpCentralRaw = quantile(kpMembers, 0.5);
 
@@ -115,13 +118,17 @@ export function shortTermForecast(inputs) {
     if (anchor) {
       const fresh = Math.min(1, Math.max(0, 1 - Math.max(0, anchor.ageMin - 20) / 60));
       wPersist = blendTable ? interp(blendTable.leads, blendTable.weight, h) * fresh : 0.85 * Math.exp(-(h + anchor.ageMin) / 60);
-      centre = (1 - wPersist) * centre + wPersist * anchor.value;
+      centre = Number.isFinite(centre) ? (1 - wPersist) * centre + wPersist * anchor.value : anchor.value;
     }
-    const shift = centre - kpCentralRaw;
+    // no driving-based member at all (an hour of data): the members are drawn around the blended centre instead
+    if (!kpMembers.length && Number.isFinite(centre)) kpMembers = new Array(members.length).fill(centre);
+    const shift = Number.isFinite(kpCentralRaw) ? centre - kpCentralRaw : 0;
     // Spread of the blended index: the calibrated RMSE of the blend at this lead while the driving is measured; beyond
     // the measured lead the analog ensemble carries the driving uncertainty and only the measured-lead spread is added.
+    // without an anchor the spread is the model's own calibrated error (modelRmse), not the blend's
+    const lead = T <= tLast ? h : Math.max(0, leadMin);
     const sigmaMap = blendTable
-      ? interp(blendTable.leads, blendTable.sigma, T <= tLast ? h : Math.max(0, leadMin)) * (anchor ? 1 : 1.15)
+      ? (anchor ? interp(blendTable.leads, blendTable.sigma, lead) : Array.isArray(blendTable.modelRmse) ? interp(blendTable.leads, blendTable.modelRmse, lead) : interp(blendTable.leads, blendTable.sigma, lead) * 1.15)
       : (coefficients?.hp30?.sigma || 0.75) * (0.55 + 0.45 * Math.min(1, h / 120)) * (1 - 0.5 * wPersist);
     kpMembers = kpMembers.map(k => Math.min(9, Math.max(0, k + shift + sigmaMap * gaussian(noise))));
 
@@ -141,7 +148,7 @@ export function shortTermForecast(inputs) {
     const marginMedian = quantile(margins, 0.5), kpMedian = quantile(kpMembers, 0.5);
 
     // Substorm phase evolution and onset chance over the horizon.
-    const factor = phaseFactorAt(substorm, h, outlook);
+    const factor = phaseFactorAt(substorm, h, outlook, mlt);
     // Visibility tiers. In the auroral zone the substorm phase decides whether anything bright is up; at lower
     // latitudes a storm-level oval is a continuous glow, so the phase only modulates the faint tiers and never
     // below one half. Fresh local magnetometer signals floor the tiers they already show for the next half hour.
@@ -170,6 +177,7 @@ export function shortTermForecast(inputs) {
     });
   }
 
+  if (rows.every(r => !Number.isFinite(r.pVisible))) return { ok: false, reason: 'Not enough solar wind history yet: the driving average needs two hours of data.' };
   const mltNow = mag.mlt(observer.mlon, new Date(now));
   const ovNow = ovation ? equatorwardBoundary(ovation, mltNow, 1.0) : null;
   let marginNow = ovNow && Number.isFinite(ovNow.mlat) ? ovNow.mlat - observer.mlat : NaN;
@@ -206,7 +214,7 @@ export function valueAt(series, T, tolMs) {
  * after 15 min -> quiet after 45 min) and a new onset may occur with probability pOnset(h),
  * which resets the factor to the expansion value.
  */
-export function phaseFactorAt(substorm, h, outlook = null) {
+export function phaseFactorAt(substorm, h, outlook = null, mlt = NaN) {
   if (!substorm || !substorm.phase || substorm.phase === 'unknown') return { factor: 0.55, pOnset: NaN, pOnsetSector: NaN }; // no magnetometer: climatological middle
   const since = (Number.isFinite(substorm.minutesSinceOnset) ? substorm.minutesSinceOnset : 1e6) + h;
   let base, ongoing = false;
@@ -217,11 +225,18 @@ export function phaseFactorAt(substorm, h, outlook = null) {
   // An ongoing substorm at the chain counts only in so far as the observer's local-time sector is the active one.
   const chainReach = outlook && Number.isFinite(outlook.chainReachMlt) ? outlook.chainReachMlt : 1;
   if (ongoing) base = PHASE_FACTOR.quiet + (base - PHASE_FACTOR.quiet) * chainReach;
-  const pOn = onsetProbability(substorm.loaded, substorm.powerRecent, substorm.powerRecent, h, { ekl: substorm.ekl });
+  const P = (m) => (m > 0 ? onsetProbability(substorm.loaded, substorm.powerRecent, substorm.powerRecent, m, { ekl: substorm.ekl }) : 0);
+  const pOn = P(h);
+  // the chance that an onset in the observer's sector reaches them, from the magnetic local time at the horizon (the
+  // outlook only has rows for some horizons; a missing row used to count as full reach)
   const row = outlook?.horizons?.find(r => r.h === h);
-  const reach = row && Number.isFinite(row.reachMlt) ? row.reachMlt : 1;
-  const p = Number.isFinite(pOn) ? pOn * reach : 0;
-  return { factor: (1 - p) * base + p * PHASE_FACTOR.expansion, pOnset: pOn, pOnsetSector: Number.isFinite(pOn) ? p : NaN };
+  const reach = Number.isFinite(mlt) ? localReachMlt(mlt) : row && Number.isFinite(row.reachMlt) ? row.reachMlt : 1;
+  if (!Number.isFinite(pOn) || !Number.isFinite(reach)) return { factor: base, pOnset: pOn, pOnsetSector: NaN };
+  // At the horizon the observer is in expansion only if the onset came in its last 15 minutes, in recovery if it came
+  // 15 to 45 minutes before; an earlier onset is over. (Counting any onset within h as expansion made the factor climb
+  // with the horizon, so the auroral-zone headline always picked the last one.)
+  const pExp = (pOn - P(h - 15)) * reach, pRec = (P(h - 15) - P(h - 45)) * reach;
+  return { factor: base + pExp * (PHASE_FACTOR.expansion - base) + pRec * (PHASE_FACTOR.recovery - base), pOnset: pOn, pOnsetSector: pOn * reach };
 }
 
 function verdict(rows, marginNow, substorm, ovFaint, mltNow, outlook = null, regime = 'midlatitude', local = null) {

@@ -63,7 +63,9 @@ test('buildTable aligns Hp30 intervals with weighted 4-hour driving', () => {
   const hp = [{ tStart: t0 + 4 * 3600e3, tEnd: t0 + 4.5 * 3600e3, hp30: 2 }, { tStart: t0 + 4.5 * 3600e3, tEnd: t0 + 5 * 3600e3, hp30: 3 }];
   const rows = buildTable(omni, hp);
   assert.equal(rows.length, 2);
-  assert.ok(rows[0].coupling > 1000 && rows[0].coupling < 1100);
+  // hourly means 1047.5 / 1035.5 / 1023.5 / 1011.5 back from the interval end, weighted 1 / 0.65 / 0.4225 / 0.2746:
+  // a 30-minute lag (1029.6) or an hour of look-ahead (1047.6) would both miss
+  assert.ok(Math.abs(rows[0].coupling - 1035.6) < 0.1, `driving ${rows[0].coupling}`);
   assert.ok(Number.isNaN(rows[0].prevHp30) && rows[1].prevHp30 === 2);
 });
 
