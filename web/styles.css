@@ -82,6 +82,14 @@ input[type="number"] { width: 5.5em; font-family: var(--mono); }
 .freshness li.aging::before { background: var(--warn); }
 .freshness li.stale::before, .freshness li.missing::before { background: var(--critical); }
 .freshness li .age { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.data-status { font-size: 0.8rem; color: var(--ink-2); display: flex; align-items: baseline; gap: 6px; }
+.data-status::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); align-self: center; }
+.data-status.fresh::before { background: var(--good); }
+.data-status.aging::before { background: var(--warn); }
+@media (prefers-reduced-motion: no-preference) {
+  .data-status.loading::before, .freshness li.loading::before { animation: pulse 1.2s ease-in-out infinite; }
+}
+@keyframes pulse { 50% { opacity: 0.25; } }
 .signals { margin-top: -4px; }
 .sighting { display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; font-size: 0.85rem; color: var(--ink-2); }
 .sighting-label { color: var(--muted); }

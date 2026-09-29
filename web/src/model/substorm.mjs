@@ -52,6 +52,23 @@ export function parseHapiVector(json) {
   return { t, x, y, z };
 }
 
+/**
+ * Extend a station series with a newer chunk (FMI's 1-hour file, a twentieth of the day file) and keep the rolling
+ * window the day file itself covers, so the result matches a fresh day file. Returns a new {t, x, y, z}.
+ */
+export function extendSeries(prev, chunk, spanMs = 24 * 60 * MIN) {
+  const last = prev.t.length ? prev.t[prev.t.length - 1] : -Infinity;
+  const out = { t: prev.t.slice(), x: prev.x.slice(), y: prev.y.slice(), z: prev.z.slice() };
+  for (let i = 0; i < chunk.t.length; i++) {
+    if (chunk.t[i] <= last) continue;
+    out.t.push(chunk.t[i]); out.x.push(chunk.x[i]); out.y.push(chunk.y[i]); out.z.push(chunk.z[i]);
+  }
+  const end = out.t.length ? out.t[out.t.length - 1] : -Infinity;
+  let i0 = 0; while (i0 < out.t.length && out.t[i0] <= end - spanMs) i0++;
+  if (i0) for (const k of ['t', 'x', 'y', 'z']) out[k] = out[k].slice(i0);
+  return out;
+}
+
 /** Average a 10-second series onto 1-minute bins. Returns {t, x} with t at bin start. */
 export function toMinutes(series) {
   const out = new Map();

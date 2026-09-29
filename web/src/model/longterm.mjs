@@ -189,17 +189,42 @@ export function enlilEvents(series, now) {
     if (r.cloud <= 0.1 && inCloud) { inCloud = false; if (start >= now - DAY) events.push({ kind: 'cme-cloud', start, end: r.t }); }
   }
   if (inCloud && start) events.push({ kind: 'cme-cloud', start, end: rows[rows.length - 1].t });
-  // HSS ramps: compare each point to the minimum in the preceding 24 h
-  for (let i = 0; i < rows.length; i++) {
-    if (rows[i].t < now - DAY) continue;
-    let vmin = Infinity, tmin = rows[i].t;
-    for (let j = i; j >= 0 && rows[i].t - rows[j].t <= DAY; j--) if (rows[j].v < vmin) { vmin = rows[j].v; tmin = rows[j].t; }
-    if (rows[i].v - vmin >= 100 && !events.some(e => e.kind === 'hss' && Math.abs(e.start - tmin) < 12 * 3600e3)) {
-      events.push({ kind: 'hss', start: tmin, peakT: rows[i].t, from: vmin, to: rows[i].v });
-    }
-  }
+  events.push(...streamRamps(rows, now - DAY));
   const last = rows.length ? rows[rows.length - 1].t : null;
   return { rows, events, horizonEnd: last };
+}
+
+/**
+ * High-speed stream ramps in an ascending speed series [{t, v}] from `since` on: the first point at least `rise`
+ * km/s above the minimum of the preceding 24 h, one ramp per 12 h -> [{kind: 'hss', start, peakT, from, to}].
+ */
+export function streamRamps(rows, since, { rise = 100 } = {}) {
+  const out = [];
+  for (let i = 0; i < rows.length; i++) {
+    if (rows[i].t < since) continue;
+    let vmin = Infinity, tmin = rows[i].t;
+    for (let j = i; j >= 0 && rows[i].t - rows[j].t <= DAY; j--) if (rows[j].v < vmin) { vmin = rows[j].v; tmin = rows[j].t; }
+    if (rows[i].v - vmin >= rise && !out.some(e => Math.abs(e.start - tmin) < 12 * 3600e3)) out.push({ kind: 'hss', start: tmin, peakT: rows[i].t, from: vmin, to: rows[i].v });
+  }
+  return out;
+}
+
+/** Synodic Carrington rotation as seen from Earth, in days. */
+export const SOLAR_ROTATION_DAYS = 27.2753;
+
+/**
+ * 27-day recurrence forecast (Owens et al. 2013, Space Weather 11, 225): the solar wind measured one solar rotation
+ * ago, shifted forward, as the speed expected now. Streams from long-lived coronal holes return each rotation, so
+ * near solar minimum and in the declining phase this matches numerical models point by point; a CME seen a
+ * rotation ago repeats in it as a false stream. hourly: [{t, v}] measured -> {rows: [{t, v}] between from and to,
+ * peak: {t, v} of the rows after now or null, ramps: stream ramps expected after now}.
+ */
+export function recurrenceForecast(hourly, now, { from = now - 12 * 3600e3, to = now + 5 * DAY, periodDays = SOLAR_ROTATION_DAYS } = {}) {
+  const shift = periodDays * DAY;
+  const rows = hourly.map(r => ({ t: r.t + shift, v: r.v })).filter(r => r.t >= from && r.t <= to && Number.isFinite(r.v));
+  const ahead = rows.filter(r => r.t > now);
+  const peak = ahead.length ? ahead.reduce((a, b) => (b.v > a.v ? b : a)) : null;
+  return { rows, peak, ramps: streamRamps(rows, now) };
 }
 
 // ---------------------------------------------------------------------------------

@@ -9,7 +9,7 @@ import { weightedRecentAverage, meanBetween, lowerBound, quantile, analogEnsembl
 import { kpFromDriving, hp30FromDriving, blend, gScale, kpThirds, probabilityAtLeast, probabilityFromPoint, clamp, NEWELL2008 } from '../web/src/model/activity.mjs';
 import { MagneticCoordinates, dipoleCoords, mltBin, DIPOLE_POLE } from '../web/src/model/magcoords.mjs';
 import { parseOvationText, electronFlux, noaaProbability, equatorwardBoundary, hemisphericPower, alFromKp, starkovBoundary, noaaRuleBoundary, boundaryForKp, kpForBoundary, visibilityClass, VIEW_ALLOWANCE_DEG, OVATION_MLT_BINS, OVATION_MLAT_BINS, OVATION_MLAT0 } from '../web/src/model/oval.mjs';
-import { parseFmi, parseIaga2002, parseHapiVector, toMinutes, quietBaseline, detectOnsets, confirmOnsets, classifyPhase, onsetProbability, normalCdf, substormState, PHASE, PHASE_FACTOR } from '../web/src/model/substorm.mjs';
+import { parseFmi, parseIaga2002, parseHapiVector, toMinutes, quietBaseline, detectOnsets, confirmOnsets, classifyPhase, onsetProbability, normalCdf, substormState, extendSeries, PHASE, PHASE_FACTOR } from '../web/src/model/substorm.mjs';
 import { shortTermForecast, valueAt, phaseFactorAt, DEFAULT_HORIZONS } from '../web/src/model/shortterm.mjs';
 
 const fixture = (name) => readFile(new URL(`./fixtures/${name}`, import.meta.url), 'utf8');
@@ -306,6 +306,20 @@ describe('substorm', async () => {
     assert.equal(new Date(s.t[0]).toISOString(), '2026-09-17T14:16:00.000Z');
     const h = parseHapiVector({ data: [['2026-09-17T14:17Z', [7608.78, 1583, 54436.75]], ['2026-09-17T14:18Z', [99999, 1, 1]], ['2026-09-17T14:19Z', 7604.55, 1585.83, 54439.6]] });
     assert.deepEqual(h.x, [7608.78, 7604.55]); assert.deepEqual(h.z, [54436.75, 54439.6]);
+  });
+  test('extendSeries: the day file cut short, extended by its last hour, equals the day file', () => {
+    const cut = kev.t.length - 360, head = (s, n) => ({ t: s.t.slice(0, n), x: s.x.slice(0, n), y: s.y.slice(0, n), z: s.z.slice(0, n) });
+    const tail = { t: kev.t.slice(cut - 30), x: kev.x.slice(cut - 30), y: kev.y.slice(cut - 30), z: kev.z.slice(cut - 30) }; // overlaps by 5 minutes
+    const joined = extendSeries(head(kev, cut), tail);
+    assert.deepEqual(joined, { t: kev.t, x: kev.x, y: kev.y, z: kev.z });
+    // an hour beyond the day file: the window moves, the oldest hour drops out, the length stays one day
+    const later = { t: kev.t.slice(-360).map(t => t + HOUR), x: kev.x.slice(-360), y: kev.y.slice(-360), z: kev.z.slice(-360) };
+    const moved = extendSeries(kev, later);
+    assert.equal(moved.t.length, 8640);
+    assert.equal(moved.t[0], kev.t[360]);
+    assert.equal(moved.t.at(-1), kev.t.at(-1) + HOUR);
+    assert.equal(kev.t.length, 8640, 'the input series is not modified');
+    assert.deepEqual(extendSeries(kev, { t: [], x: [], y: [], z: [] }), { t: kev.t, x: kev.x, y: kev.y, z: kev.z });
   });
   test('toMinutes averages onto 1440 minute bins', () => {
     const m = toMinutes(kev);

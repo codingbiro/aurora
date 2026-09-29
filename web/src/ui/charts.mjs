@@ -240,29 +240,45 @@ export function kpForecastChart(container, d) {
     .on('pointerleave', () => tip.hide());
 }
 
-/** Enlil speed chart: rows [{t, v, n, cloud}], events, now. */
-export function enlilChart(container, rows, events, now) {
+/**
+ * Solar wind speed at Earth: the WSA-Enlil run (rows [{t, v, n, cloud}], events) and, dashed, the 27-day recurrence
+ * (recurrence [{t, v}], hourly), which reaches days beyond the end of the run.
+ */
+export function enlilChart(container, rows, events, now, recurrence = []) {
   const width = Math.max(container.clientWidth || 600, 420), height = 170;
   const m = { top: 12, right: 14, bottom: 28, left: 40 };
   const svg = svgIn(container, width, height);
-  const R = rows.filter(r => r.t >= now - 2 * 86400e3);
-  if (!R.length) return;
-  const x = d3.scaleUtc().domain(d3.extent(R, r => r.t)).range([m.left, width - m.right]);
-  const y = d3.scaleLinear().domain([Math.max(200, d3.min(R, r => r.v) - 30), d3.max(R, r => r.v) + 30]).nice().range([height - m.bottom, m.top]);
+  const R = rows.filter(r => r.t >= now - 2 * 86400e3), C = recurrence.filter(r => r.t >= now - 2 * 86400e3);
+  if (!R.length && !C.length) return;
+  const all = [...R, ...C];
+  const x = d3.scaleUtc().domain(d3.extent(all, r => r.t)).range([m.left, width - m.right]);
+  const y = d3.scaleLinear().domain([Math.max(200, d3.min(all, r => r.v) - 30), d3.max(all, r => r.v) + 30]).nice().range([height - m.bottom, m.top]);
   svg.append('rect').attr('x', x(now)).attr('width', Math.max(0, x.range()[1] - x(now))).attr('y', m.top).attr('height', height - m.top - m.bottom).attr('fill', css('--shade-future'));
   const clouds = R.filter(r => r.cloud > 0.1);
   svg.selectAll(null).data(clouds).enter().append('rect').attr('x', r => x(r.t)).attr('width', 2).attr('y', m.top).attr('height', height - m.top - m.bottom).attr('fill', css('--s2')).attr('opacity', 0.35);
   svg.append('g').call(d3.axisLeft(y).ticks(4).tickSize(-(width - m.left - m.right)).tickFormat('')).attr('transform', `translate(${m.left},0)`).selectAll('line').attr('stroke', css('--grid'));
-  svg.append('path').datum(R).attr('fill', 'none').attr('stroke', css('--s2')).attr('stroke-width', 2).attr('d', d3.line().x(r => x(r.t)).y(r => y(r.v)));
+  if (R.length) svg.append('path').datum(R).attr('fill', 'none').attr('stroke', css('--s2')).attr('stroke-width', 2).attr('d', d3.line().x(r => x(r.t)).y(r => y(r.v)));
+  if (C.length) {
+    // hours missing from the archive leave a gap rather than a straight line across them
+    const gapped = C.flatMap((r, i) => (i && r.t - C[i - 1].t > 2 * HOUR ? [{ t: r.t, v: NaN }, r] : [r]));
+    svg.append('path').datum(gapped).attr('fill', 'none').attr('stroke', css('--s1')).attr('stroke-width', 1.5).attr('stroke-dasharray', '5 3').attr('d', d3.line().defined(r => Number.isFinite(r.v)).x(r => x(r.t)).y(r => y(r.v)));
+  }
   events.filter(e => e.kind === 'hss' && e.peakT >= now - 6 * HOUR).forEach((e, i) => svg.append('text').attr('x', Math.max(m.left + 2, x(e.start) + 3)).attr('y', m.top + 10 + i * 12).attr('font-size', 10).attr('fill', css('--ink')).text(`ramp ${fmt.int(e.from)}→${fmt.int(e.to)} km/s by ${fmt.hm(e.peakT)}Z`));
   svg.append('line').attr('x1', x(now)).attr('x2', x(now)).attr('y1', m.top).attr('y2', height - m.bottom).attr('stroke', css('--ink')).attr('opacity', 0.6);
-  svg.append('g').attr('class', 'axis').attr('transform', `translate(0,${height - m.bottom})`).call(d3.axisBottom(x).ticks(d3.utcHour.every(12)).tickFormat(d3.utcFormat('%a %H:%M')).tickSizeOuter(0)).selectAll('text').attr('fill', css('--ink-2'));
+  const long = x.domain()[1] - x.domain()[0] > 3 * 86400e3;
+  svg.append('g').attr('class', 'axis').attr('transform', `translate(0,${height - m.bottom})`).call(d3.axisBottom(x).ticks(long ? d3.utcDay.every(1) : d3.utcHour.every(12)).tickFormat(d3.utcFormat(long ? '%a %d' : '%a %H:%M')).tickSizeOuter(0)).selectAll('text').attr('fill', css('--ink-2'));
   svg.append('g').attr('class', 'axis').attr('transform', `translate(${m.left},0)`).call(d3.axisLeft(y).ticks(4).tickSizeOuter(0)).selectAll('text').attr('fill', css('--ink-2'));
   const tip = tooltip(container);
   const bis = d3.bisector(r => r.t).center;
+  const near = (arr, t, tol) => { if (!arr.length) return null; const r = arr[bis(arr, t)]; return r && Math.abs(r.t - t) <= tol ? r : null; };
   svg.append('rect').attr('x', m.left).attr('y', m.top).attr('width', width - m.left - m.right).attr('height', height - m.top - m.bottom).attr('fill', 'transparent')
-    .on('pointermove', (ev) => { const [px, py] = d3.pointer(ev, svg.node()); const r = R[bis(R, x.invert(px).getTime())]; if (!r) return;
-      tip.show(px * (container.clientWidth / width), py * (container.clientWidth / width), `<div class="t">${fmt.dateUtc(r.t)}</div><table><tr><td>speed</td><td class="v">${fmt.int(r.v)} km/s</td></tr><tr><td>density</td><td class="v">${fmt.num(r.n, 1)} /cm³</td></tr><tr><td>CME tracer</td><td class="v">${fmt.num(r.cloud, 2)}</td></tr></table>`); })
+    .on('pointermove', (ev) => {
+      const [px, py] = d3.pointer(ev, svg.node()); const t = x.invert(px).getTime();
+      const r = near(R, t, HOUR), c = near(C, t, HOUR); if (!r && !c) return;
+      const rowsHtml = (r ? `<tr><td>WSA-Enlil</td><td class="v">${fmt.int(r.v)} km/s</td></tr><tr><td>density</td><td class="v">${fmt.num(r.n, 1)} /cm³</td></tr><tr><td>CME tracer</td><td class="v">${fmt.num(r.cloud, 2)}</td></tr>` : '')
+        + (c ? `<tr><td>27-day recurrence</td><td class="v">${fmt.int(c.v)} km/s</td></tr>` : '');
+      tip.show(px * (container.clientWidth / width), py * (container.clientWidth / width), `<div class="t">${fmt.dateUtc((r || c).t)}</div><table>${rowsHtml}</table>`);
+    })
     .on('pointerleave', () => tip.hide());
 }
 

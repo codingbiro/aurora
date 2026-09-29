@@ -44,13 +44,22 @@ export function renderTiles(fc) {
 export function renderFreshness(items) {
   const ul = clear(document.getElementById('freshness'));
   for (const it of items) {
-    ul.append(el('li', { class: it.level, title: it.title || '' }, [it.label, ' ', el('span', { class: 'age', text: fmt.age(it.ageMin) })]));
+    ul.append(el('li', { class: it.level, title: it.title || '' }, [it.label, ' ', el('span', { class: 'age', text: it.level === 'loading' ? 'loading' : fmt.age(it.ageMin) })]));
   }
 }
 
+/** The line above the freshness strip: {level: 'loading' | 'fresh' | 'aging', text}. */
+export function renderDataStatus({ level, text }) {
+  const box = document.getElementById('data-status'); if (!box) return;
+  box.className = `data-status ${level}`; box.textContent = text;
+}
+
+/** What an empty section says, by the state of the source behind it ('ok', 'loading' or 'failed'). */
+const emptyText = (source, texts) => texts[source] || texts.ok;
+
 export function renderNights(cards, extras) {
   const box = clear(document.getElementById('nights'));
-  if (!cards || !cards.length) { box.append(el('p', { class: 'empty', text: 'No Kp forecast available.' })); return; }
+  if (!cards || !cards.length) { box.append(el('p', { class: 'empty', text: emptyText(extras.source, { ok: 'No Kp forecast available.', loading: 'Loading the Kp forecast…', failed: 'The NOAA Kp forecast is not answering; retrying.' }) })); return; }
   cards.forEach((c, i) => {
     const ph = c.estimates.horizon?.probability, po = c.estimates.overhead?.probability;
     const tone = ph >= 0.5 ? 'good' : ph >= 0.2 ? 'maybe' : 'low';
@@ -71,10 +80,10 @@ export function renderNights(cards, extras) {
 }
 function sameDay(label, t) { const d = new Date(t); const m = label.match(/(\w{3}) (\d{1,2})/); if (!m) return false; return d.getUTCDate() === +m[2] && d.toLocaleString('en', { month: 'short', timeZone: 'UTC' }) === m[1]; }
 
-export function renderCmes(cmes, now) {
+export function renderCmes(cmes, now, source = 'ok') {
   const box = clear(document.getElementById('cmes'));
   box.append(el('h3', { text: 'Coronal mass ejections heading this way (NASA DONKI WSA-Enlil runs)' }));
-  if (!cmes || !cmes.length) { box.append(el('p', { class: 'empty', text: 'No Earth-directed CME arrival predicted in the next five days.' })); return; }
+  if (!cmes || !cmes.length) { box.append(el('p', { class: 'empty', text: emptyText(source, { ok: 'No Earth-directed CME arrival predicted in the next five days.', loading: 'Loading CME arrivals from NASA DONKI…', failed: 'NASA DONKI is not answering, so CME arrivals are unknown for now; retrying.' }) })); return; }
   for (const c of cmes) {
     const k = c.kp; const range = Number.isFinite(k?.k90) ? `Kp ${k.k90}–${k.k180} depending on field orientation` : 'Kp range not given';
     box.append(el('div', { class: 'cme' }, [
@@ -85,28 +94,32 @@ export function renderCmes(cmes, now) {
   }
 }
 
-export function renderAlerts(msgs) {
+export function renderAlerts(msgs, source = 'ok') {
   const box = clear(document.getElementById('alerts'));
   box.append(el('h3', { text: 'NOAA geomagnetic watches, warnings and alerts' }));
-  if (!msgs || !msgs.length) { box.append(el('p', { class: 'empty', text: 'None active.' })); return; }
+  if (!msgs || !msgs.length) { box.append(el('p', { class: 'empty', text: emptyText(source, { ok: 'None active.', loading: 'Loading…', failed: 'NOAA alerts are not answering; retrying.' }) })); return; }
   for (const a of msgs.slice(0, 6)) {
     const first = a.message.split('\n').find(l => /^(WATCH|WARNING|ALERT|EXTENDED|CONTINUED|SUMMARY)/.test(l)) || a.code;
     box.append(el('div', { class: `alert ${a.kind}` }, [el('h3', { text: first }), el('div', { class: 'meta', text: `${a.code} · issued ${fmt.dateUtc(a.issued)}${a.validUntil ? ` · valid until ${fmt.dateUtc(a.validUntil)}` : ''}` })]));
   }
 }
 
-export function renderAgreement(items) {
+export function renderAgreement(items, loading = false) {
   const box = clear(document.getElementById('agreement'));
   box.append(el('h3', { text: 'What the forecast centres say' }));
+  let shown = 0;
   for (const it of items) {
     if (!it.text) continue;
     box.append(el('div', { class: 'agree' }, [el('h3', { text: it.title }), el('div', { class: 'meta', text: it.meta || '' }), el('p', { text: it.text })]));
+    shown++;
   }
+  if (!shown && loading) box.append(el('p', { class: 'empty', text: 'Loading…' }));
 }
 
-export function renderDiscussion(disc, threeDay) {
+export function renderDiscussion(disc, threeDay, source = 'ok') {
   const box = clear(document.getElementById('discussion'));
   box.append(el('h3', { text: 'NOAA forecaster discussion' }));
+  if (!disc && !threeDay && source !== 'ok') { box.append(el('p', { class: 'empty', text: source === 'loading' ? 'Loading…' : 'The NOAA discussion is not answering; retrying.' })); return; }
   if (threeDay?.rationale) box.append(el('p', { text: `Kp rationale: ${threeDay.rationale}` }));
   if (disc?.sections?.solarWind) box.append(el('p', { text: `Solar wind: ${disc.sections.solarWind.forecast}` }));
   if (disc?.sections?.geospace) box.append(el('p', { text: `Geospace: ${disc.sections.geospace.forecast}` }));
@@ -143,6 +156,7 @@ export function renderMethod() {
     ['Verification', 'The Worker\'s 5-minute job logs the tier probabilities at +10, +30 and +60 min for every configured place, together with the observed Hp30, Dst, AuroraWatch UK\'s level and Tormestorp\'s K at that moment. The model-check page scores them against what followed (Hp30 exceedances, AuroraWatch levels) and against your own sighting reports from the buttons above the timeline.'],
     ['Substorms', 'The twelve Finnish IMAGE magnetometers (58 to 70°N) are combined into the IL and IU electrojet indicators the way FMI does it: quiet baselines from the calmest three-hour window of the day, IL the lowest and IU the highest deviation across the chain. Onsets are detected on IL with the Newell & Gjerloev (2011) SuperMAG criterion (drops of 15, 30 and 45 nT in the first three minutes, then at least 100 nT below the onset level for half an hour; provisional after three minutes, confirmed after thirty). The westward electrojet is located from the X profile and the sign change of Z across the chain. A minimal substorm model (energy loading at the Akasofu rate, release about every 2.7 h under steady driving) gives the chance of the next onset; the chance that it happens in your sky follows the IMAGE FUV onset climatology (median 23 MLT, latitude 73° − 5.2√Em from the merging electric field) and the average reach of the expanding bulge (about 5° poleward within the hour, roughly 1.5 h of local time either side). FMI\'s own aurora indicator, the hourly maximum of the minute-to-minute change of the horizontal field, is shown against the station thresholds FMI published (85 % of exceedances came with aurora at Sodankylä).'],
     ['Next three nights', 'NOAA\'s 3-hourly Kp forecast and its daily probabilities of active, minor, moderate and strong storms, GFZ\'s 72-hour ensemble, NASA DONKI CME arrival predictions (±7 h, Kp range by field orientation) and WSA-Enlil\'s predicted solar wind speed at Earth. The night probabilities average these estimates for the Kp your latitude needs.'],
+    ['27-day recurrence', 'High-speed streams from long-lived coronal holes return every solar rotation, so the solar wind measured one rotation ago (27.3 days, NOAA\'s real-time archive of the L1 spacecraft) is drawn as a forecast for the next five days, where the WSA-Enlil run has already ended. Near solar minimum and in the declining phase it matches numerical models point by point (Owens et al. 2013); a CME seen a rotation ago repeats in it as a false stream. It replaces the CLEAR ambient model on iSWA, whose runs stopped on 23 September 2026; CLEAR comes back by itself if its runs resume.'],
     ['Limits', 'The magnetic field orientation inside a CME is unknown until it reaches L1, so multi-day forecasts stay probabilistic. Clouds and daylight are deliberately ignored here.'],
   ];
   for (const [h, p] of blocks) { box.append(el('h3', { text: h })); box.append(el('p', { text: p })); }

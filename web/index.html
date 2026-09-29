@@ -7,11 +7,42 @@
 <meta name="description" content="Northern lights forecast for one place: the next two hours from measured solar wind, the substorm cycle from Finnish magnetometers, and the next three nights from CME and Kp forecasts.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='14' fill='%230f2a3a'/%3E%3Cpath d='M6 20 C 10 8, 14 24, 18 12 S 24 18, 27 9' stroke='%2358d6a2' stroke-width='3' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="preconnect" href="https://services.swpc.noaa.gov" crossorigin>
+<!-- web fonts must not hold the page: a render-blocking stylesheet also delays every script until it arrives -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" media="print" onload="this.media='all'">
 <link rel="stylesheet" href="styles.css">
-<script src="config.js"></script>
-<script src="vendor/d3.v7.min.js"></script>
-<script src="vendor/topojson-client.min.js"></script>
+<!-- The whole module graph and the static tables load in parallel instead of import by import
+     (test/page.test.mjs checks that every module reachable from src/app.mjs is listed). -->
+<link rel="modulepreload" href="src/app.mjs">
+<link rel="modulepreload" href="src/data/noaa.mjs">
+<link rel="modulepreload" href="src/data/fetch-util.mjs">
+<link rel="modulepreload" href="src/data/donki.mjs">
+<link rel="modulepreload" href="src/data/hapi.mjs">
+<link rel="modulepreload" href="src/data/proxied.mjs">
+<link rel="modulepreload" href="src/data/local.mjs">
+<link rel="modulepreload" href="src/data/feeds.mjs">
+<link rel="modulepreload" href="src/data/snapshot.mjs">
+<link rel="modulepreload" href="src/model/coupling.mjs">
+<link rel="modulepreload" href="src/model/substorm.mjs">
+<link rel="modulepreload" href="src/model/electrojet.mjs">
+<link rel="modulepreload" href="src/model/oval.mjs">
+<link rel="modulepreload" href="src/model/magcoords.mjs">
+<link rel="modulepreload" href="src/model/sky.mjs">
+<link rel="modulepreload" href="src/model/mos.mjs">
+<link rel="modulepreload" href="src/model/shortterm.mjs">
+<link rel="modulepreload" href="src/model/integrate.mjs">
+<link rel="modulepreload" href="src/model/activity.mjs">
+<link rel="modulepreload" href="src/model/longterm.mjs">
+<link rel="modulepreload" href="src/ui/charts.mjs">
+<link rel="modulepreload" href="src/ui/format.mjs">
+<link rel="modulepreload" href="src/ui/map.mjs">
+<link rel="modulepreload" href="src/ui/panels.mjs">
+<link rel="preload" href="data/aacgm_europe_grid.json" as="fetch" crossorigin>
+<link rel="preload" href="data/mlt_reference.json" as="fetch" crossorigin>
+<link rel="preload" href="data/coefficients.json" as="fetch" crossorigin>
+<script src="config.js" defer></script>
+<script src="vendor/d3.v7.min.js" defer></script>
+<script src="vendor/topojson-client.min.js" defer></script>
 </head>
 <body>
 <header class="masthead">
@@ -34,6 +65,7 @@
         <optgroup label="Auroral zone">
           <option value="69.649,18.956">Tromsø</option>
           <option value="69.968,23.272">Alta</option>
+          <option value="71.172,25.784">Nordkapp</option>
           <option value="68.350,18.830">Lapland: Abisko</option>
           <option value="67.856,20.225">Lapland: Kiruna</option>
           <option value="67.804,24.809">Lapland: Levi</option>
@@ -58,6 +90,7 @@
     <p class="verdict-detail" id="verdict-detail"></p>
     <dl class="site-facts" id="site-facts"></dl>
   </div>
+  <p class="data-status loading" id="data-status">Loading live data…</p>
   <ul class="freshness" id="freshness" aria-label="Data freshness"></ul>
 </header>
 
@@ -110,8 +143,9 @@
     </figure>
     <div class="cmes" id="cmes"></div>
     <figure class="chart" id="enlil">
-      <figcaption>WSA-Enlil predicted solar wind speed at Earth</figcaption>
+      <figcaption>Predicted solar wind speed at Earth: the WSA-Enlil run, and the 27-day recurrence for five days ahead</figcaption>
       <div class="chart-body" id="enlil-chart"></div>
+      <div class="legend" id="enlil-legend"></div>
       <p class="note" id="enlil-note"></p>
     </figure>
     <div class="agreement" id="agreement"></div>
