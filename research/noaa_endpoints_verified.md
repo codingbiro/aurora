@@ -32,7 +32,9 @@ products/solar-wind/{mag,plasma}-{5-minute,2-hour,6-hour,1-day,3-day,7-day}.json
   last minute equals that block's entry in the 3-h file)
 - products/noaa-planetary-k-index.json: 3-h Kp, 7 days: {time_tag, Kp, a_running, station_count} (station_count 8; a block appears
   some minutes after it ends. GFZ's own Kp, kp.gfz.de/app/json/?index=Kp, had the 09-12 UTC block at 12:03 with status 'pre';
-  'def' once final: all of August by 2026-10-03, September still 'pre')
+  'def' once final: all of August by 2026-10-03, September still 'pre'. GFZ also gives the block in progress a provisional value
+  part of the way through it (12-15 UTC: none at 12:07, 0.333 at 13:12) and revises recent 'pre' blocks (06-09 UTC: 2.0 at
+  12:15, 2.333 at 13:12))
 - json/boulder_k_index_1m.json: Boulder K 1-min, 24 h
 - products/kyoto-dst.json: hourly Kyoto Dst, 7 d
 - products/noaa-scales.json: keys -1,0,1,2,3 (yesterday, now, today, +1, +2 days): G/S/R scale + probabilities

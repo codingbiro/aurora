@@ -31,6 +31,8 @@ export const statusText = (s) => GFZ_STATUS[s] || s || '';
  * only 'observed' rows count, because the Kp forecast file labels the rest of the current UTC day 'estimated', and those
  * are forecast values. running: NOAA's 1-minute running estimate [{t, kp}]; its value in the last five minutes of a
  * finished block is NOAA's number for that block, which stands in until either file has it (a few minutes after the end).
+ * Only blocks whose three hours are over count: GFZ also publishes a provisional value for the block in progress, part
+ * of the way through it, and that value keeps changing until the block ends.
  */
 export function kpBlocks({ gfz = [], noaa = [], running = [], now }) {
   const byT = new Map();
@@ -42,7 +44,7 @@ export function kpBlocks({ gfz = [], noaa = [], running = [], now }) {
   const out = [];
   for (const [t0, r] of lastIn) if (!byT.has(t0) && r.t >= t0 + BLOCK - 5 * MIN && t0 + BLOCK <= now) out.push({ t: t0, kp: r.kp, source: 'NOAA running', status: null, gfz: NaN, noaa: NaN });
   for (const b of byT.values()) {
-    if (b.t > now) continue;
+    if (b.t + BLOCK > now) continue;
     if (Number.isFinite(b.gfz)) { b.kp = b.gfz; b.source = 'GFZ'; } else { b.kp = b.noaa; b.source = 'NOAA'; }
     out.push(b);
   }

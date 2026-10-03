@@ -40,6 +40,15 @@ describe('3-hour blocks', () => {
     assert.equal(b[0].noaa, 2); assert.equal(b[0].status, 'pre'); assert.ok(Number.isNaN(b[2].gfz));
   });
 
+  test('a block counts once its three hours are over: GFZ\'s provisional value for the block in progress does not', () => {
+    // seen 2026-10-03 13:12 UTC: GFZ had 0.333 "pre" for 12-15 UTC, which is still running
+    const gfz = [{ t: at(9), value: 1.667, status: 'pre' }, { t: at(12), value: 0.333, status: 'pre' }];
+    assert.deepEqual(kpBlocks({ gfz, now: at(13, 12) }).map(x => x.t), [at(9)]);
+    assert.deepEqual(kpBlocks({ gfz, now: at(15) }).map(x => x.t), [at(9), at(12)]);
+    const s = kpSummary({ blocks: kpBlocks({ gfz, now: at(13, 12) }), running: [{ t: at(13, 11), kp: 0.33 }], now: at(13, 12) });
+    assert.equal(s.last.t, at(9)); assert.deepEqual(s.block, { t: at(12), kp: 0.33, at: at(13, 11) });
+  });
+
   test("NOAA's 'estimated' rows are the rest of the day's forecast, never a measurement (captured file)", async () => {
     // captured 2026-09-17 16:05 UTC: observed up to the 12-15 block, 'estimated' for 15, 18 and 21 UTC
     const noaa = parseKpForecast(await json('kp-forecast.json'));
