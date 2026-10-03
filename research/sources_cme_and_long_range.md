@@ -10,7 +10,8 @@ All fetches done 2026-09-17 13:13–14:31 UTC with curl from this machine; raw r
 
 **Name:** DONKI web service (keyless host)
 **Verified:** yes — all six endpoints, 30-day window 2026-08-18..09-17, HTTP 200 JSON in 0.5–4.7 s
-**URLs:** `https://kauai.ccmc.gsfc.nasa.gov/DONKI/WS/get/{CME|CMEAnalysis|WSAEnlilSimulations|GST|FLR|notifications}?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD` (notifications also needs `&type=all|CME|FLR|SEP|IPS|MPC|GST|RBE|report`; `type=CME` verified). CMEAnalysis extra params verified: `mostAccurateOnly=true&speed=500&halfAngle=30&catalog=ALL` (returned 20 rows, min speed 510, min halfAngle 30).
+**Moved (verified 2026-10-03):** CCMC's September 2026 update replaced `https://kauai.ccmc.gsfc.nasa.gov/DONKI/WS/get/…` with `https://ccmc.gsfc.nasa.gov/DONKI-API/get/…` (same parameters and JSON, CORS `*`); the old URLs now answer 301 to the notice at https://ccmc.gsfc.nasa.gov/news/major-updates.
+**URLs (as verified on the old host):** `https://kauai.ccmc.gsfc.nasa.gov/DONKI/WS/get/{CME|CMEAnalysis|WSAEnlilSimulations|GST|FLR|notifications}?startDate=YYYY-MM-DD&endDate=YYYY-MM-DD` (notifications also needs `&type=all|CME|FLR|SEP|IPS|MPC|GST|RBE|report`; `type=CME` verified). CMEAnalysis extra params verified: `mostAccurateOnly=true&speed=500&halfAngle=30&catalog=ALL` (returned 20 rows, min speed 510, min halfAngle 30).
 **What it provides:** M2M/CCMC human-analysed CMEs, cone-model parameters, WSA-Enlil+Cone runs with Earth arrival predictions, storms, flares, and the human-written notifications.
 **Key fields (exact, from data):**
 - `WSAEnlilSimulations[]`: `simulationID, modelCompletionTime, au (2.0|5.5), cmeInputs[{cmeStartTime, cmeid, latitude, longitude, speed, halfAngle, time21_5, featureCode, isMostAccurate, levelOfData, ipsList[]}], estimatedShockArrivalTime, estimatedDuration, rmin_re, kp_18, kp_90, kp_135, kp_180, isEarthGB, isEarthMinorImpact, impactList[{location, arrivalTime, isGlancingBlow, isMinorImpact}], link`
@@ -34,7 +35,7 @@ All fetches done 2026-09-17 13:13–14:31 UTC with curl from this machine; raw r
 **Verified:** yes — same six endpoints with `api_key=DEMO_KEY`, identical data (1.3–6.7 s).
 **URL:** `https://api.nasa.gov/DONKI/{endpoint}?…&api_key=KEY`
 **Auth/limits:** docs (`/assets/html/authentication.html`): DEMO_KEY 30 req/IP/hour and 50/IP/day; registered key 1,000/hour. Observed headers: `x-ratelimit-limit: 10`, remaining dropped 9→4 over 8 calls and was back to 9 after 13 min (short rolling window). Not usable from a public page.
-**CORS:** `*` (OPTIONS 403). Use kauai directly instead; a registered key belongs in a proxy.
+**CORS:** `*` (OPTIONS 403). Use the keyless CCMC host directly instead; a registered key belongs in a proxy.
 
 ## 2. WSA-Enlil predicted solar wind at Earth as data
 
@@ -134,13 +135,14 @@ Also verified: `https://kp.gfz.de/app/json/?start=…&end=…&index=Kp|Hp30` (ob
 
 **Name:** CCMC CME Arrival Time Scoreboard web service
 **Verified:** yes. **URL:** `https://kauai.ccmc.gsfc.nasa.gov/CMEscoreboard/WS/get/predictions` (7.1 MB JSON, 470 CMEs 2013–2026-09-13; `startDate/endDate` params are ignored); `…/WS/get/methods` lists method names.
+**Moved (verified 2026-10-03):** now `https://ccmc.gsfc.nasa.gov/CMESB-Earth/WS/get/predictions` (same fields, 1.1 MB), but it serves only the last 365 days and ignores every date parameter tried (`startDate/endDate`, `cmeStartTime/cmeEndTime`, `cmeStartDate/cmeEndDate`, `startTime/endTime`, `start/end`, `fromDate/toDate`). `calibration/scoreboard.mjs` merges each download into its cached history by `cmeID`.
 **Key fields:** `cmeID, observedTime, arrivalTime, noArrivalObserved, maxKP, dstMin, dstMinTime, predictions[{predictedMethodName, submissionTime, predictedArrivalTime, uncertaintyMinusInHrs, uncertaintyPlusInHrs, confidenceInPercentage, predictedMaxKpLowerRange, predictedMaxKpUpperRange, predictedDstMin, leadTimeInHrs, differenceInHrs, predictionNote}]`. 2026 methods include WSA-ENLIL+Cone from NASA M2M, Met Office, KSWC, BoM, NOAA/SWPC, SIDC, ELEvo, OSPREI, plus "Average/Median of all Methods".
 **CORS:** `*`. **Caveat:** in the current payload every 2026 CME already has an observed `arrivalTime` or `noArrivalObserved`; I found 0 pending (not-yet-arrived) CMEs, so the WS looks retrospective — excellent for showing per-method error statistics, unverified as a live feed.
 
 ## Ranked recommendations
 
 **(a) CME arrival prediction**
-1. DONKI `CME` (or `WSAEnlilSimulations`) on kauai — keyless, CORS `*`, structured arrival time ±7 h, glancing flag, Kp 90/135/180 range, ~3–7 h after CME onset. Poll every 15–30 min; dedupe by `cmeid`, keep the latest `modelCompletionTime` among `isMostAccurate` inputs. Browser-direct.
+1. DONKI `CME` (or `WSAEnlilSimulations`) on the CCMC host — keyless, CORS `*`, structured arrival time ±7 h, glancing flag, Kp 90/135/180 range, ~3–7 h after CME onset. Poll every 15–30 min; dedupe by `cmeid`, keep the latest `modelCompletionTime` among `isMostAccurate` inputs. Browser-direct.
 2. SWPC `enlil_time_series.json` + `alerts.json` (WATA20/30/50 watches = the official "G-level predicted by day") + `3-day-forecast.txt` rationale — NOAA's official view of the same CMEs, CORS `*`. Browser-direct.
 3. iSWA data-tree `.dat` Earth timelines for plotting the CCMC run's B/V/n/T and Kp scenarios — needs a proxy (no CORS, HTML directory listings).
 4. CME Scoreboard for multi-agency arrival spread and historical error bars — CORS `*` but 7 MB; cache in the proxy and slice.
@@ -152,4 +154,4 @@ Also verified: `https://kp.gfz.de/app/json/?start=…&end=…&index=Kp|Hp30` (ob
 4. iSWA HAPI `NOAA_KP_P3H` as a CORS-enabled mirror of NOAA Kp with a clean time-range API; `swpc_27day` / `airforce_45day` for the outlook tail.
 Not usable now: BoM (key exposure, no Kp forecast), ESA network and IRF Lund (login wall / unreachable).
 
-**Browser-direct vs proxy:** direct — everything on `services.swpc.noaa.gov`, `kauai.ccmc.gsfc.nasa.gov/DONKI` and `/CMEscoreboard`, iSWA HAPI. Proxy — GFZ files, SIDC text, Met Office consumer API, iSWA data-tree `.dat`, NOMADS NetCDF, BoM (key), api.nasa.gov (key/rate limits).
+**Browser-direct vs proxy:** direct — everything on `services.swpc.noaa.gov`, `ccmc.gsfc.nasa.gov/DONKI-API` and `/CMESB-Earth` (formerly `kauai.ccmc.gsfc.nasa.gov/DONKI` and `/CMEscoreboard`), iSWA HAPI. Proxy — GFZ files, SIDC text, Met Office consumer API, iSWA data-tree `.dat`, NOMADS NetCDF, BoM (key), api.nasa.gov (key/rate limits).

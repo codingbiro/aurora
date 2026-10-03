@@ -1,7 +1,8 @@
-// NASA CCMC DONKI (keyless host). CORS "*" for simple GET requests.
+// NASA CCMC DONKI (keyless host). CORS "*" for simple GET requests. CCMC's September 2026 update moved the API from
+// kauai.ccmc.gsfc.nasa.gov/DONKI/WS/get (now a redirect to a news page) to here, with the same parameters and JSON.
 import { fetchWithMeta } from './fetch-util.mjs';
 
-export const DONKI = 'https://kauai.ccmc.gsfc.nasa.gov/DONKI/WS/get';
+export const DONKI = 'https://ccmc.gsfc.nasa.gov/DONKI-API/get';
 
 const ymd = (ms) => new Date(ms).toISOString().slice(0, 10);
 

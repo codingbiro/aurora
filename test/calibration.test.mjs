@@ -1,7 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseOmniLine, parseHp30Line, ols, robustOls, predict, skill, lagQuantiles, buildTable, reliability, OMNI_COL } from '../calibration/lib.mjs';
-import { scoreboardStats } from '../calibration/scoreboard.mjs';
+import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { scoreboardStats, mergeScoreboard, loadScoreboard, SCOREBOARD_URL } from '../calibration/scoreboard.mjs';
 import { newellCoupling } from '../web/src/model/coupling.mjs';
 
 // Synthetic OMNI HRO line built from the verified column layout (46 columns + 3 GOES fluxes).
@@ -90,4 +93,33 @@ test('scoreboard statistics per method', () => {
   assert.equal(other.n, 1); assert.equal(other.mae, 10); assert.equal(other.within7h, 0); assert.equal(other.kpHit, 0);
   assert.equal(s.donkiLike.length, 1); assert.equal(s.donkiLike[0].kpHit, 1);
   assert.equal(s.methods.find(m => m.name === 'All methods').n, 2);
+});
+
+test('scoreboard downloads merge into the cached history; an HTML answer leaves it alone', async () => {
+  // the new endpoint serves the last 365 days; the cache holds the history from the old host
+  assert.equal(SCOREBOARD_URL, 'https://ccmc.gsfc.nasa.gov/CMESB-Earth/WS/get/predictions');
+  const old = [{ cmeID: '2013-03-15T06:54:00-CME-001', maxKP: 5 }, { cmeID: '2026-09-14T11:08:00-CME-001', maxKP: null }];
+  const fresh = [{ cmeID: '2026-09-14T11:08:00-CME-001', maxKP: 3 }, { cmeID: '2026-09-30T02:00:00-CME-001', maxKP: null }];
+  assert.deepEqual(mergeScoreboard(old, fresh), [fresh[1], fresh[0], old[0]]);
+  assert.deepEqual(mergeScoreboard({ predictions: old }, []), [old[1], old[0]]);
+
+  const dir = await mkdtemp(join(tmpdir(), 'aurora-scoreboard-')), file = join(dir, 'cme_scoreboard.json');
+  const realFetch = globalThis.fetch, realError = console.error, realLog = console.log;
+  console.error = () => {}; console.log = () => {};
+  try {
+    await writeFile(file, JSON.stringify(old));
+    // what kauai answers now: a redirect to a news page, which fetch follows to a 200
+    globalThis.fetch = async () => new Response('<!DOCTYPE html><html>Major updates</html>', { status: 200, headers: { 'Content-Type': 'text/html' } });
+    assert.deepEqual(await loadScoreboard({ cacheDir: dir }), old);
+    assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), old);
+    globalThis.fetch = async () => new Response(JSON.stringify(fresh), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const merged = await loadScoreboard({ cacheDir: dir });
+    assert.deepEqual(merged.map(c => c.cmeID), [fresh[1].cmeID, fresh[0].cmeID, old[0].cmeID]);
+    assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), merged);
+    globalThis.fetch = async () => { throw new Error('offline should not fetch'); };
+    assert.equal((await loadScoreboard({ cacheDir: dir, offline: true })).length, 3);
+  } finally {
+    globalThis.fetch = realFetch; console.error = realError; console.log = realLog;
+    await rm(dir, { recursive: true, force: true });
+  }
 });

@@ -1,5 +1,7 @@
 // CME Arrival Time Scoreboard statistics per prediction method.
-// Source: https://kauai.ccmc.gsfc.nasa.gov/CMEscoreboard/WS/get/predictions
+// Source: https://ccmc.gsfc.nasa.gov/CMESB-Earth/WS/get/predictions (until September 2026 on kauai.ccmc.gsfc.nasa.gov,
+// which now redirects to a news page). The new endpoint serves the last 365 days, so downloads are merged into the
+// history kept in the cache, which holds every CME since 2013 from the old host.
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -8,23 +10,38 @@ import { quantile } from '../web/src/model/integrate.mjs';
 import { round } from './lib.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
-export const SCOREBOARD_URL = 'https://kauai.ccmc.gsfc.nasa.gov/CMEscoreboard/WS/get/predictions';
+export const SCOREBOARD_URL = 'https://ccmc.gsfc.nasa.gov/CMESB-Earth/WS/get/predictions';
+
+const cmeList = (x) => (Array.isArray(x) ? x : Array.isArray(x?.predictions) ? x.predictions : []);
+
+/** The cached history with a download merged in: one entry per cmeID, the downloaded one winning, newest first. */
+export function mergeScoreboard(cached, fresh) {
+  const byId = new Map(cmeList(cached).filter(c => c?.cmeID).map(c => [c.cmeID, c]));
+  for (const c of cmeList(fresh)) if (c?.cmeID) byId.set(c.cmeID, c);
+  return [...byId.values()].sort((a, b) => (a.cmeID < b.cmeID ? 1 : a.cmeID > b.cmeID ? -1 : 0));
+}
 
 export async function loadScoreboard({ offline = false, cacheDir = join(here, 'cache') } = {}) {
   await mkdir(cacheDir, { recursive: true });
   const file = join(cacheDir, 'cme_scoreboard.json');
-  if (!offline || !existsSync(file)) {
-    console.log('downloading CME scoreboard ...');
-    try {
-      const res = await fetch(SCOREBOARD_URL);
-      if (!res.ok) throw new Error(`scoreboard HTTP ${res.status}`);
-      await writeFile(file, Buffer.from(await res.arrayBuffer()));
-    } catch (err) {
-      if (!existsSync(file)) throw err;
-      console.error(`${err.message}: using the cached copy`); // a failed download must not throw the history away
-    }
+  let cached = [];
+  if (existsSync(file)) try { cached = cmeList(JSON.parse(await readFile(file, 'utf8'))); } catch (err) { console.error(`cached scoreboard unreadable (${err.message})`); }
+  if (offline && cached.length) return cached;
+  console.log('downloading CME scoreboard ...');
+  try {
+    const res = await fetch(SCOREBOARD_URL);
+    if (!res.ok) throw new Error(`scoreboard HTTP ${res.status}`);
+    // the old host answers with a redirect to an HTML page and a 200: anything but a list of CMEs leaves the cache alone
+    const fresh = await res.json().catch(() => null);
+    if (!Array.isArray(fresh)) throw new Error('scoreboard: the answer is not a list of CMEs');
+    const merged = mergeScoreboard(cached, fresh);
+    await writeFile(file, JSON.stringify(merged));
+    return merged;
+  } catch (err) {
+    if (!cached.length) throw err;
+    console.error(`${err.message}: using the cached copy`); // a failed download must not throw the history away
+    return cached;
   }
-  return JSON.parse(await readFile(file, 'utf8'));
 }
 
 /**

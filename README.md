@@ -18,7 +18,7 @@ Clouds are ignored; the sky line shows sun elevation, tonight's dark window and 
 ```bash
 npm install
 npm run dev          # http://localhost:8787  (static site + /api proxy in one Node process)
-npm test             # 199 offline unit tests (node:test)
+npm test             # 200 offline unit tests (node:test)
 npm run smoke        # pull live data and print the two-hour forecast for Copenhagen in the terminal
 npm run calibrate    # refit Hp30 coefficients, blend weights and spreads from GFZ + OMNI (downloads ~150 MB once, cached)
 node calibration/hindcast.mjs 2 52.42 23   # two-year hindcast of the decision for one magnetic latitude: base rates, skill by lead, Brier, reliability
