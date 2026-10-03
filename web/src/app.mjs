@@ -8,17 +8,18 @@ import { FeedScheduler } from './data/feeds.mjs';
 import { readSnapshot, writeSnapshot, buildSnapshot, freshEntries, setPath } from './data/snapshot.mjs';
 import { MagneticCoordinates } from './model/magcoords.mjs';
 import { parseOvationText, kpForBoundary, VIEW_ALLOWANCE_DEG, TIERS } from './model/oval.mjs';
-import { skyState } from './model/sky.mjs';
+import { skyState, darkIntervals } from './model/sky.mjs';
 import { loadLocal, localSignal } from './data/local.mjs';
 import { pairWithHp30, mosFit, mosApply } from './model/mos.mjs';
 import { substormState, toMinutes, quietBaseline, substormOutlook, phaseIntervals, onsetMltDensity, ONSET_CLIMATOLOGY, extendSeries } from './model/substorm.mjs';
 import { shortTermForecast } from './model/shortterm.mjs';
 import { weightedRecentAverage } from './model/integrate.mjs';
 import { hp30FromDriving } from './model/activity.mjs';
+import { kpBlocks, kpSummary, blockStart, BLOCK } from './model/kphistory.mjs';
 import { parseGeomagForecast, parseThreeDayForecast, parseDiscussion, parse27Day, parseAlerts, activeGeomagneticMessages, cmeArrivals, enlilEvents, nightCards, recurrenceForecast, SOLAR_ROTATION_DAYS } from './model/longterm.mjs';
-import { timelineChart, boundaryChart, substormChart, kpForecastChart, enlilChart, electrojetChart, profileChart, onsetClockChart } from './ui/charts.mjs';
+import { timelineChart, boundaryChart, substormChart, kpForecastChart, kpHistoryChart, enlilChart, electrojetChart, profileChart, onsetClockChart } from './ui/charts.mjs';
 import { polarMap, subsolarPoint } from './ui/map.mjs';
-import { renderVerdict, renderTiles, renderFreshness, renderNights, renderCmes, renderAlerts, renderAgreement, renderDiscussion, renderHorizonTable, renderLegend, renderMethod, renderSubstormPanel, renderLocalSignals, renderDataStatus } from './ui/panels.mjs';
+import { renderVerdict, renderTiles, renderFreshness, renderNights, renderCmes, renderAlerts, renderAgreement, renderDiscussion, renderHorizonTable, renderLegend, renderMethod, renderSubstormPanel, renderLocalSignals, renderDataStatus, renderKpTiles, renderKpTable } from './ui/panels.mjs';
 import { fmt } from './ui/format.mjs';
 
 const MIN = 60e3, HOUR = 3600e3, DAY = 86400e3;
@@ -47,7 +48,7 @@ const DEFAULT_OBSERVER = { lat: 55.676, lon: 12.568 };
 const state = {
   observer: { ...DEFAULT_OBSERVER }, mag: null, obs: null, coefficients: null,
   propagated: [], ovation: null, ovationGrid: null, kp1m: [], geospaceKp: [], hemi: [], hp30: [], hpo: [], stations: [], stationSource: null, rtsw: null,
-  kpForecast: [], geomag: null, threeDay: null, discussion: null, outlook: null, alerts: [], scales: null, enlil: null, cmes: [], gfzEnsemble: [], clear: [], recurrence: [], metoffice: null, sidc: null, flares: [],
+  kpForecast: [], gfzKp: [], kpRange: 72, geomag: null, threeDay: null, discussion: null, outlook: null, alerts: [], scales: null, enlil: null, cmes: [], gfzEnsemble: [], clear: [], recurrence: [], metoffice: null, sidc: null, flares: [],
   meta: {}, sub: null, fc: null, substormOutlook: null, tgo: null,
   geoDst: [], kyotoDst: [], localRaw: {}, local: null, sky: null, geoWeek: [], geoMos: null,
   historyReady: false, snapshotAt: null,
@@ -95,8 +96,9 @@ function setObserver(lat, lon, remember = true) {
 // ---------------------------------------------------------------- feeds
 // Every source is its own feed (data/feeds.mjs): it lands on its own, folds into `state` and redraws only the
 // sections it enters, so a slow or failing upstream never holds back the rest. parts: 'model' (next two hours and
-// substorms), 'map', 'long' (next three nights); fields: the state paths it writes, saved for the next visit;
-// quiet: not named in the status line while it loads or fails.
+// substorms), 'map', 'long' (next three nights), 'kp' (measured Kp); fields: the state paths it writes, saved for the
+// next visit (for a day with keepLong, else 45 min unless the feed is part of 'long'); quiet: not named in the status
+// line while it loads or fails.
 const lean = (m) => (m ? { ok: m.ok, status: m.status, url: m.url, fetchedAt: m.fetchedAt, lastModified: m.lastModified, latencyMs: m.latencyMs, error: m.error } : null);
 const tagTime = (s) => Date.parse(s + (String(s).endsWith('Z') ? '' : 'Z'));
 const dstRows = (rows) => rows.map(r => ({ t: tagTime(r.time_tag), dst: +r.dst })).filter(r => Number.isFinite(r.t) && Number.isFinite(r.dst));
@@ -116,7 +118,7 @@ const FEEDS = [
       if (Number.isFinite(known) && Math.min(...r.data.map(x => x.tMeasured)) - known > 10 * MIN) scheduler.runNow('propagated7');
       state.propagated = recent(mergePropagated(state.propagated, r.data)); return true;
     } },
-  { id: 'kp1m', label: 'NOAA est. Kp', every: MIN, parts: ['model'], fields: ['kp1m'], get: () => load.kp1m(), put: (r) => { if (!r.data.length) return false; state.kp1m = r.data; return true; } },
+  { id: 'kp1m', label: 'NOAA est. Kp', every: MIN, parts: ['model', 'kp'], fields: ['kp1m'], get: () => load.kp1m(), put: (r) => { if (!r.data.length) return false; state.kp1m = r.data; return true; } },
   { id: 'geospace', label: 'Geospace Kp', every: MIN, parts: ['model'], fields: ['geospaceKp'], get: () => load.geospaceKp(), put: (r) => { if (!r.data.length) return false; state.geospaceKp = r.data; return true; } },
   { id: 'geoDst', label: 'Geospace Dst', quiet: true, every: MIN, parts: ['model'], fields: ['geoDst'], get: () => load.json(URLS.geospaceDst1h), put: (r) => { const rows = Array.isArray(r.data) ? dstRows(r.data) : []; if (!rows.length) return false; state.geoDst = rows; return true; } },
   { id: 'hemi', label: 'hemispheric power', quiet: true, delay: 5e3, every: MIN, parts: [], fields: ['hemi'], get: () => load.hemiPower(), put: (r) => { if (!r.data.length) return false; state.hemi = r.data; return true; } },
@@ -153,7 +155,7 @@ const FEEDS = [
       if (!list.some(s => s.r.series && s.r.series.t.length) || !got.length) return false;
       state.stations = got; state.stationSource = proxy.available ? 'FMI' : 'INTERMAGNET'; return true;
     } },
-  { id: 'hp30', label: proxy.available ? 'GFZ Hp30' : 'Hp30 (iSWA mirror)', every: 2 * MIN, parts: ['model'], fields: ['hp30'],
+  { id: 'hp30', label: proxy.available ? 'GFZ Hp30' : 'Hp30 (iSWA mirror)', every: 2 * MIN, parts: ['model', 'kp'], fields: ['hp30'],
     get: () => { const now = Date.now(); return proxy.available ? proxy.gfzIndex('Hp30', now - 7 * 86400e3, now + HOUR) : iswaHp30(now, 168); },
     put: (r) => { if (!r.data.length) return false; state.hp30 = r.data.map(x => ({ t: x.t, value: x.value ?? x.hp30 })); return true; } },
   { id: 'hpo', label: 'GFZ Hpo forecast', quiet: true, proxy: true, every: 2 * MIN, parts: ['model'], fields: ['hpo'],
@@ -166,6 +168,10 @@ const FEEDS = [
       return { meta: bars.meta.ok ? bars.meta : ace.meta, data: [...byT.values()].sort((a, b) => a.t - b.t) };
     },
     put: (r) => { if (!r.data.some(x => Number.isFinite(x.median))) return false; state.hpo = r.data; return true; } },
+  // the official 3-hour Kp from the UTC midnight a week ago (whole days for the table); NOAA's values stand in without it
+  { id: 'gfzKp', label: 'GFZ Kp', quiet: true, proxy: true, every: 5 * MIN, keepLong: true, parts: ['kp'], fields: ['gfzKp'],
+    get: () => { const now = Date.now(); return proxy.gfzIndex('Kp', Math.floor(now / DAY) * DAY - 7 * DAY, now + HOUR); },
+    put: (r) => { if (!r.data.length) return false; state.gfzKp = r.data; return true; } },
   { id: 'tormestorp', label: 'Tormestorp', proxy: true, every: 2 * MIN, parts: ['model'], fields: ['localRaw.tormestorp'],
     get: () => loadLocal.tormestorp(proxy),
     put: (r) => { if (!r.series) return false; const prev = state.localRaw.tormestorp; state.localRaw.tormestorp = { ...r, quiet: r.quiet || prev?.quiet || null, k: r.k?.length ? r.k : prev?.k || [], meta: lean(r.meta) }; return true; } },
@@ -188,7 +194,7 @@ const FEEDS = [
       if (!(r.days && r.days.length)) return false;
       state.tgo = { site: r.site.site, name: r.site.name, days: r.days, meta: lean(r.meta) }; return true;
     } },
-  { id: 'kpForecast', label: 'Kp forecast', every: 15 * MIN, parts: ['long'], fields: ['kpForecast'], get: () => load.kpForecast(), put: (r) => { if (!r.data.length) return false; state.kpForecast = r.data; return true; } },
+  { id: 'kpForecast', label: 'Kp forecast', every: 15 * MIN, parts: ['long', 'kp'], fields: ['kpForecast'], get: () => load.kpForecast(), put: (r) => { if (!r.data.length) return false; state.kpForecast = r.data; return true; } },
   { id: 'geomag', label: 'NOAA storm probabilities', quiet: true, every: 15 * MIN, parts: ['long'], fields: ['geomag'], get: () => load.text(URLS.geomagForecast), put: (r) => { if (!r.text) return false; const g = parseGeomagForecast(r.text); if (!g.probabilities.length) return false; state.geomag = g; return true; } },
   { id: 'threeDay', label: 'NOAA 3-day forecast', quiet: true, every: 15 * MIN, parts: ['long'], fields: ['threeDay'], get: () => load.text(URLS.threeDay), put: (r) => { if (!r.text) return false; const t = parseThreeDayForecast(r.text); if (!t.kp.length && !t.rationale) return false; state.threeDay = t; return true; } },
   { id: 'discussion', label: 'NOAA discussion', quiet: true, every: 15 * MIN, parts: ['long'], fields: ['discussion'], get: () => load.text(URLS.discussion), put: (r) => { if (!r.text) return false; const d = parseDiscussion(r.text); if (!Number.isFinite(d.issued)) return false; state.discussion = d; return true; } },
@@ -229,7 +235,7 @@ const FEEDS = [
 // refresh is never re-stamped as new.
 const KEEP_MODEL = 45 * MIN, KEEP_LONG = 24 * HOUR, FIRST_SAVE_MS = 10e3, SAVE_EVERY_MS = 15 * MIN;
 const KEEP = new Map();
-for (const f of FEEDS) for (const p of [...f.fields, `meta.${f.id}`]) KEEP.set(p, Math.max(KEEP.get(p) || 0, f.parts.includes('long') ? KEEP_LONG : KEEP_MODEL));
+for (const f of FEEDS) for (const p of [...f.fields, `meta.${f.id}`]) KEEP.set(p, Math.max(KEEP.get(p) || 0, f.keepLong || f.parts.includes('long') ? KEEP_LONG : KEEP_MODEL));
 // The map only draws northern cells with a value, so only those (and the two times) are saved; of the solar wind only
 // the last 12 hours (the first paint needs 6, and the 7-day file is fetched again on every visit). About 4 MB a save.
 const COMPACT = {
@@ -312,9 +318,9 @@ function modeledKp(t) {
 
 function renderShort() {
   const now = Date.now(); const fc = state.fc;
-  const kpObs = state.kp1m.length ? state.kp1m[state.kp1m.length - 1].kp : NaN;
+  const kpLast = state.kp1m.length ? state.kp1m[state.kp1m.length - 1] : null, kpObs = kpLast ? kpLast.kp : NaN;
   const hp30 = state.hp30.length ? state.hp30[state.hp30.length - 1].value : NaN;
-  renderVerdict(fc, state.obs, state.mag, { thresholds: state.thresholds, tierThresholds: state.tierThresholds, kpObs, hp30, sky: state.sky, dst: state.dst, geoMos: state.geoMos });
+  renderVerdict(fc, state.obs, state.mag, { thresholds: state.thresholds, tierThresholds: state.tierThresholds, kpObs, kpObsT: kpLast?.t, hp30, sky: state.sky, dst: state.dst, geoMos: state.geoMos });
   renderTiles(fc);
   renderLocalSignals({ local: state.local, dst: state.dst, sky: state.sky, now, regime: fc?.regime });
   renderHorizonTable(fc);
@@ -412,6 +418,26 @@ function renderLong() {
   renderDiscussion(state.discussion, state.threeDay, sourceState('discussion', 'discussion'));
 }
 
+const KP_RANGES = [24, 72, 168];
+function renderKp() {
+  const now = Date.now(), hours = state.kpRange;
+  const blocks = kpBlocks({ gfz: state.gfzKp, noaa: state.kpForecast, running: state.kp1m, now });
+  const s = kpSummary({ blocks, hp30: state.hp30, running: state.kp1m, now });
+  renderKpTiles(s, { thresholds: state.thresholds });
+  // whole blocks, ending with the one in progress
+  const xMax = blockStart(now) + BLOCK, xMin = xMax - hours * HOUR, { lat, lon } = state.observer;
+  kpHistoryChart(document.getElementById('kp-history-chart'), { now, xMin, xMax, blocks, running: s.block, hp30: state.hp30, nights: darkIntervals(xMin, xMax, lat, lon), thresholds: state.thresholds });
+  document.getElementById('kp-history-caption').textContent = `3-hour Kp and the half-hourly Hp30, last ${hours === 24 ? '24 hours' : `${hours / 24} days`}`;
+  renderLegend('kp-history-legend', [{ label: '3-hour Kp (GFZ; NOAA until GFZ publishes)', color: 'var(--s1)', kind: 'area' }, { label: 'block in progress so far (NOAA)', color: 'var(--s1)', kind: 'dash' },
+    { label: 'Hp30, every half hour (GFZ)', color: 'var(--s2)' }, state.thresholds ? { label: 'your thresholds', color: 'var(--s3)', kind: 'dash' } : null].filter(Boolean));
+  const place = placeName();
+  document.getElementById('kp-history-note').textContent = `UTC. Shaded: dark ${place === 'you' ? 'where you are' : `in ${place}`} (sun more than 12° below the horizon).`;
+  const days = []; for (let d0 = Math.floor(now / DAY) * DAY; d0 + DAY > xMin; d0 -= DAY) days.push(d0);
+  renderKpTable(blocks, s.block, days, now);
+  document.getElementById('kp-table-note').textContent = '* NOAA\'s value: GFZ has not published that block yet. Italic: the block in progress, NOAA\'s running estimate so far. GFZ marks its values preliminary until they are final, weeks later. Hover a cell for both sources.';
+}
+function syncKpRange() { for (const b of document.querySelectorAll('#kp-range button')) b.setAttribute('aria-pressed', String(+b.dataset.hours === state.kpRange)); }
+
 function renderFreshnessStrip() {
   const now = Date.now();
   const last = (arr, key = 't') => (arr && arr.length ? arr[arr.length - 1][key] : NaN);
@@ -450,7 +476,7 @@ function renderStatus() {
 }
 
 // Redraws are batched: sections are marked dirty and drawn together in the next frame (none while the tab is hidden).
-const dirty = new Set();
+const dirty = new Set(), ALL_PARTS = ['model', 'map', 'long', 'kp'];
 let flushTimer = null, flushDue = 0, framePending = false;
 function invalidate(parts = ['model', 'long'], delay = 40) {
   for (const p of parts) dirty.add(p);
@@ -472,6 +498,8 @@ function flush() {
     if (d.has('model') || d.has('map')) { try { renderMap(); } catch (e) { console.error(e.stack || e); } }
     if (d.has('long')) { try { renderLong(); } catch (e) { console.error(e.stack || e); } }
   }
+  // measured Kp needs no magnetic grid: its thresholds join once the place is converted
+  if (d.has('kp')) { try { renderKp(); } catch (e) { console.error(e.stack || e); } }
   try { renderFreshnessStrip(); } catch (e) { console.error(e.stack || e); }
   renderStatus();
   scheduleSave();
@@ -495,11 +523,11 @@ async function boot() {
   scheduler = new FeedScheduler(FEEDS, { gate: () => gate, onSettled });
   window.__aurora = state; window.__auroraFeeds = scheduler;
   scheduler.start(); // every request goes out now; results wait at the gate until the saved data is in place
-  const statics = loadStatic().then(() => { setObserver(state.observer.lat, state.observer.lon, !init.fromUrl); resolveStatic(); invalidate(['model', 'map', 'long'], 0); });
+  const statics = loadStatic().then(() => { setObserver(state.observer.lat, state.observer.lon, !init.fromUrl); resolveStatic(); invalidate(ALL_PARTS, 0); });
   const snap = await readSnapshot({ timeoutMs: 1000 });
   if (snap) hydrate(snap);
   openGate(); // live data flows from here; the sections draw once the magnetic grid is in (usually already)
-  invalidate(['model', 'map', 'long'], 0);
+  invalidate(ALL_PARTS, 0);
   await statics;
 }
 
@@ -533,7 +561,7 @@ function applyObserver(lat, lon) {
   // a place picked here replaces one that came in a shared link, also on reload
   if (location.search.includes('lat=')) try { history.replaceState(null, '', location.pathname + location.hash); } catch {}
   if (scheduler) { scheduler.runNow('tgo'); scheduler.retryFailed(); }
-  invalidate(['model', 'map', 'long'], 0);
+  invalidate(ALL_PARTS, 0);
 }
 // picking a place shows it at once; Apply is for typed coordinates
 document.getElementById('place').addEventListener('change', (e) => { if (e.target.value === 'custom') return; const [la, lo] = e.target.value.split(',').map(Number); applyObserver(la, lo); });
@@ -543,19 +571,22 @@ document.getElementById('location-form').addEventListener('submit', (e) => {
   if (Number.isFinite(la) && Number.isFinite(lo) && Math.abs(la) <= 90 && Math.abs(lo) <= 180) applyObserver(la, lo);
 });
 document.getElementById('geolocate').addEventListener('click', () => { navigator.geolocation?.getCurrentPosition(p => applyObserver(+p.coords.latitude.toFixed(3), +p.coords.longitude.toFixed(3)), () => alert('Location not available')); });
-document.getElementById('theme-toggle').addEventListener('click', () => { const root = document.documentElement; const dark = root.dataset.theme === 'dark' || (!root.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches); root.dataset.theme = dark ? 'light' : 'dark'; try { localStorage.setItem('aurora.theme', root.dataset.theme); } catch {} invalidate(['model', 'map', 'long'], 0); });
+document.getElementById('theme-toggle').addEventListener('click', () => { const root = document.documentElement; const dark = root.dataset.theme === 'dark' || (!root.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches); root.dataset.theme = dark ? 'light' : 'dark'; try { localStorage.setItem('aurora.theme', root.dataset.theme); } catch {} invalidate(ALL_PARTS, 0); });
 try { const th = localStorage.getItem('aurora.theme'); if (th) document.documentElement.dataset.theme = th; } catch {}
+try { const r = +localStorage.getItem('aurora.kpRange'); if (KP_RANGES.includes(r)) state.kpRange = r; } catch {}
+syncKpRange();
+for (const b of document.querySelectorAll('#kp-range button')) b.addEventListener('click', () => { state.kpRange = +b.dataset.hours; try { localStorage.setItem('aurora.kpRange', String(state.kpRange)); } catch {} syncKpRange(); invalidate(['kp'], 0); });
 // charts follow the width; phones fire resize for the address bar on every scroll, which changes only the height
 let lastWidth = window.innerWidth;
-window.addEventListener('resize', debounce(() => { if (window.innerWidth === lastWidth) return; lastWidth = window.innerWidth; invalidate(['model', 'map', 'long'], 0); }, 250));
+window.addEventListener('resize', debounce(() => { if (window.innerWidth === lastWidth) return; lastWidth = window.innerWidth; invalidate(ALL_PARTS, 0); }, 250));
 // background tabs throttle or freeze timers: catch up when the page is shown again, save when it is left
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') { saveNow(); return; }
   if (scheduler) { scheduler.refreshStale(); scheduler.retryFailed(); }
-  invalidate(['model', 'map', 'long'], 0);
+  invalidate(ALL_PARTS, 0);
 });
 window.addEventListener('pagehide', saveNow);
-window.addEventListener('pageshow', (e) => { if (e.persisted && scheduler) { scheduler.refreshStale(); invalidate(['model', 'map', 'long'], 0); } });
+window.addEventListener('pageshow', (e) => { if (e.persisted && scheduler) { scheduler.refreshStale(); invalidate(ALL_PARTS, 0); } });
 window.addEventListener('online', () => scheduler?.retryFailed());
 function debounce(fn, ms) { let id; return () => { clearTimeout(id); id = setTimeout(fn, ms); }; }
 

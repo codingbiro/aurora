@@ -45,6 +45,21 @@ export function darkWindow(from, lat, lon, limit = -12) {
   return start !== null ? { start, end: from + 30 * 3600e3, active: from >= start } : null;
 }
 
+/**
+ * Every interval within [t0, t1] during which the sun is below `limit` degrees: [{start, end}]. Sampled on a fixed
+ * `step` grid (not from t0), so the edges stay put while t0 moves with the clock.
+ */
+export function darkIntervals(t0, t1, lat, lon, limit = -12, step = 10 * 60e3) {
+  const out = [], first = Math.ceil(t0 / step) * step; let start = null;
+  for (let t = first; t <= t1; t += step) {
+    const dark = solarElevation(t, lat, lon) < limit;
+    if (dark && start === null) start = t === first ? t0 : t;
+    if (!dark && start !== null) { out.push({ start, end: t }); start = null; }
+  }
+  if (start !== null) out.push({ start, end: t1 });
+  return out;
+}
+
 /** Moon phase fraction 0..1 (0 = new, 0.5 = full) from the mean synodic month, and illuminated fraction. */
 export function moonPhase(t) {
   const synodic = 29.530588853 * 86400e3, ref = Date.UTC(2000, 0, 6, 18, 14); // new moon 2000-01-06 18:14 UTC

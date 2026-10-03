@@ -27,13 +27,20 @@ products/solar-wind/{mag,plasma}-{5-minute,2-hour,6-hour,1-day,3-day,7-day}.json
 
 ## Indices
 - json/planetary_k_index_1m.json: estimated Kp, 1-min, ~6 h: {time_tag, kp_index, estimated_kp, kp}
-- products/noaa-planetary-k-index.json: 3-h Kp, 7 days: {time_tag, Kp, a_running, station_count}
+  (checked 2026-10-03: a running value for the current 3-hour block, not a sliding window. It drops to 0 at 00, 03, ... 21 UTC
+  and builds up through the block, not always upward (2.67 -> 2.33 -> 2.0 between 07:59 and 08:14); its value in a block's
+  last minute equals that block's entry in the 3-h file)
+- products/noaa-planetary-k-index.json: 3-h Kp, 7 days: {time_tag, Kp, a_running, station_count} (station_count 8; a block appears
+  some minutes after it ends. GFZ's own Kp, kp.gfz.de/app/json/?index=Kp, had the 09-12 UTC block at 12:03 with status 'pre';
+  'def' once final: all of August by 2026-10-03, September still 'pre')
 - json/boulder_k_index_1m.json: Boulder K 1-min, 24 h
 - products/kyoto-dst.json: hourly Kyoto Dst, 7 d
 - products/noaa-scales.json: keys -1,0,1,2,3 (yesterday, now, today, +1, +2 days): G/S/R scale + probabilities
 
 ## Forecasts (long term)
 - products/noaa-planetary-k-index-forecast.json: 3-hourly Kp, past 7 d + 3 d ahead, {time_tag, kp, observed: observed|estimated|predicted, noaa_scale}
+  ('estimated' = the remaining blocks of the current UTC day, and they are forecast values: at 16:05 on 2026-09-17 the 15-18 block
+  read 3.33 'estimated' while the 1-min file had 0.67 so far. Only 'observed' rows are measurements)
 - text/3-day-forecast.txt (issued 12:30 UTC daily): Kp table + rationale text. text/3-day-geomag-forecast.txt (22:05 UTC daily): Ap forecast + probabilities Active/Minor/Moderate/Strong-Extreme per day + Kp table.
 - text/discussion.txt (12:30 UTC daily): forecaster discussion incl. "Solar Wind .Forecast" and "Geospace .Forecast" sections.
 - text/27-day-outlook.txt (weekly, Mondays): daily F10.7, Ap, max Kp for 27 days. text/45-day-forecast.txt + json/45-day-forecast.json: daily Ap + F10.7 45 days.

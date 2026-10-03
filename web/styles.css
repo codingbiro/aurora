@@ -103,6 +103,8 @@ input[type="number"] { width: 5.5em; font-family: var(--mono); }
 .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px; display: grid; gap: 16px; min-width: 0; }
 .panel-head { display: grid; gap: 4px; }
 .panel-sub { color: var(--ink-2); max-width: 65ch; }
+/* the right-hand column: measured Kp above the next three nights */
+.side { display: grid; gap: 18px; align-content: start; min-width: 0; }
 .two-up { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
 @media (min-width: 720px) { .two-up { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
 
@@ -140,6 +142,15 @@ input[type="number"] { width: 5.5em; font-family: var(--mono); }
 .tooltip table { border-collapse: collapse; }
 .tooltip td { padding: 1px 6px 1px 0; }
 .tooltip td.v { font-family: var(--mono); text-align: right; }
+.tooltip .sub { color: var(--muted); }
+
+/* segmented range control */
+.range { display: inline-flex; justify-self: start; }
+.range button { border-radius: 0; margin-left: -1px; padding: 4px 12px; font-size: 0.85rem; background: var(--surface); color: var(--ink-2); }
+.range button:first-child { margin-left: 0; border-radius: var(--radius) 0 0 var(--radius); }
+.range button:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
+.range button:hover { background: var(--surface-2); }
+.range button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); position: relative; }
 
 /* nights */
 .nights { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; }
@@ -171,12 +182,17 @@ input[type="number"] { width: 5.5em; font-family: var(--mono); }
 .empty { color: var(--muted); font-style: italic; }
 
 /* tables */
+/* a grid item never shrinks below its content unless told to: without this an open table widens its whole panel */
+.table-view { min-width: 0; }
 .table-view summary { cursor: pointer; color: var(--accent); }
 .table-scroll { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; font-size: 0.82rem; }
 th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
 th { color: var(--muted); font-weight: 500; }
 td.num, th.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+td.running { font-style: italic; color: var(--ink-2); }
+td.max { font-weight: 600; }
+.table-view .note { margin-top: 6px; }
 
 /* footer */
 .footer { max-width: 1400px; margin: 24px auto 0; color: var(--ink-2); font-size: 0.85rem; display: grid; gap: 10px; }

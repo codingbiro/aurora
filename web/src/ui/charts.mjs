@@ -1,6 +1,7 @@
 // SVG charts built with D3 (global `d3`). Every chart: one y-scale per row, thin marks,
 // recessive grid, crosshair tooltip, colors from CSS tokens.
 import { fmt, esc } from './format.mjs';
+import { BLOCK, stormLevel, statusText } from '../model/kphistory.mjs';
 
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 const MIN = 60e3, HOUR = 3600e3;
@@ -231,8 +232,9 @@ export function kpForecastChart(container, d) {
     svg.append('path').datum(d.gfz).attr('fill', 'none').attr('stroke', css('--s2')).attr('stroke-width', 2).attr('d', d3.line().x(p => x(p.t + 1.5 * HOUR)).y(p => y(p.median)).defined(p => Number.isFinite(p.median)));
   }
   const bw = Math.max(2, x(3 * HOUR) - x(0) - 2);
+  // only 'observed' rows are measured: NOAA labels the rest of the current UTC day 'estimated', and those are forecasts
   svg.selectAll(null).data(d.noaa.filter(b => b.t + 3 * HOUR >= xMin)).enter().append('rect').attr('x', b => x(b.t) + 1).attr('width', bw).attr('y', b => y(b.kp)).attr('height', b => height - m.bottom - y(b.kp)).attr('rx', 2)
-    .attr('fill', css('--s1')).attr('opacity', b => (b.status === 'predicted' ? 0.85 : 0.4));
+    .attr('fill', css('--s1')).attr('opacity', b => (b.status === 'observed' ? 0.4 : 0.85));
   for (const [name, v] of Object.entries(d.thresholds || {})) if (Number.isFinite(v) && v <= y.domain()[1]) {
     svg.append('line').attr('x1', m.left).attr('x2', width - m.right).attr('y1', y(v)).attr('y2', y(v)).attr('stroke', css('--s3')).attr('stroke-width', 1.5).attr('stroke-dasharray', '3 4');
     svg.append('text').attr('x', width - m.right - 2).attr('y', y(v) - 3).attr('text-anchor', 'end').attr('font-size', 10).attr('fill', css('--ink-2')).text(`${name}: Kp ${v.toFixed(1)}`);
@@ -256,6 +258,83 @@ export function kpForecastChart(container, d) {
     .on('pointerenter', (ev, b) => { const [px, py] = d3.pointer(ev, svg.node()); const g = (d.gfz || []).find(r => Math.abs(r.t - b.t) < 90 * MIN);
       tip.show(px * (container.clientWidth / width), py * (container.clientWidth / width), `<div class="t">${fmt.dateUtc(b.t)} (+3 h)</div><table><tr><td>NOAA Kp (${esc(b.status)})</td><td class="v">${fmt.num(b.kp, 2)}</td></tr>${g ? `<tr><td>GFZ ensemble median</td><td class="v">${fmt.num(g.median, 2)}</td></tr><tr><td>GFZ 25–75%</td><td class="v">${fmt.num(g.q25, 1)}–${fmt.num(g.q75, 1)}</td></tr><tr><td>P(Kp≥5)</td><td class="v">${fmt.pct(g.pGe5)}</td></tr>` : ''}</table>`); })
     .on('pointerleave', () => tip.hide());
+}
+
+/**
+ * Measured Kp: {now, xMin, xMax (block boundaries), blocks [{t, kp, source, status, gfz, noaa}] (finished blocks),
+ * running {t, kp, at}|null (the block in progress so far), hp30 [{t, value}], nights [{start, end}], thresholds}.
+ * Finished blocks are bars, the block in progress a dashed outline, Hp30 a half-hourly step line; every block is its own
+ * hover target.
+ */
+export function kpHistoryChart(container, d) {
+  const width = Math.max(container.clientWidth || 600, 320), height = 220, narrow = width < 560;
+  const m = { top: 12, right: 14, bottom: 26, left: 30 };
+  const svg = svgIn(container, width, height);
+  const span = d.xMax - d.xMin;
+  const x = d3.scaleUtc().domain([d.xMin, d.xMax]).range([m.left, width - m.right]);
+  const inRange = (t0, t1) => t1 > d.xMin && t0 < d.xMax;
+  const blocks = d.blocks.filter(b => Number.isFinite(b.kp) && inRange(b.t, b.t + BLOCK));
+  const hp = (d.hp30 || []).filter(h => Number.isFinite(h.value) && inRange(h.t, h.t + 30 * MIN));
+  const run = d.running && inRange(d.running.t, d.running.t + BLOCK) ? d.running : null;
+  const top = d3.max([...blocks.map(b => b.kp), ...hp.map(h => h.value), run ? run.kp : 0]) || 0;
+  const y = d3.scaleLinear().domain([0, Math.max(6, Math.ceil(top) + 1)]).range([height - m.bottom, m.top]);
+  const y0 = y(0), plotH = y0 - m.top;
+  const clipId = `clip-${++clipSeq}`;
+  svg.append('clipPath').attr('id', clipId).append('rect').attr('x', m.left).attr('y', m.top).attr('width', width - m.left - m.right).attr('height', plotH);
+  const g = svg.append('g').attr('clip-path', `url(#${clipId})`);
+  for (const n of d.nights || []) g.append('rect').attr('x', x(n.start)).attr('width', Math.max(0, x(n.end) - x(n.start))).attr('y', m.top).attr('height', plotH).attr('fill', css('--shade-night'));
+  if (d.now < d.xMax) g.append('rect').attr('x', x(d.now)).attr('width', x(d.xMax) - x(d.now)).attr('y', m.top).attr('height', plotH).attr('fill', css('--shade-future'));
+  for (let k = 1; k <= y.domain()[1]; k++) g.append('line').attr('x1', m.left).attr('x2', width - m.right).attr('y1', y(k)).attr('y2', y(k)).attr('stroke', css('--grid'));
+  // a bar spans its three hours, 2 px from its neighbours, rounded at the top only; a measured 0 keeps a 2 px stub,
+  // so it does not read as a missing block
+  const slot = (t) => { const x0 = x(Math.max(t, d.xMin)) + 1, x1 = x(Math.min(t + BLOCK, d.xMax)) - 1; return { x0, w: Math.max(1, x1 - x0) }; };
+  const barPath = (t, v) => { const { x0, w } = slot(t), h = Math.max(2, y0 - y(v)), r = Math.min(3, w / 2, h); return `M${x0},${y0}v${-(h - r)}q0,${-r} ${r},${-r}h${w - 2 * r}q${r},0 ${r},${r}v${h - r}z`; };
+  const bars = g.selectAll(null).data(blocks).enter().append('path').attr('d', b => barPath(b.t, b.kp)).attr('fill', css('--s1')).attr('opacity', 0.55);
+  if (run) {
+    const { x0, w } = slot(run.t), yt = y(run.kp);
+    g.append('rect').attr('x', x0).attr('width', w).attr('y', yt).attr('height', Math.max(0, y0 - yt)).attr('fill', css('--s1')).attr('opacity', 0.15);
+    g.append('path').attr('d', `M${x0},${y0}V${yt}H${x0 + w}V${y0}`).attr('fill', 'none').attr('stroke', css('--s1')).attr('stroke-width', 1.5).attr('stroke-dasharray', '3 3');
+  }
+  if (hp.length) {
+    // half-hour steps; a missing half hour leaves a gap instead of a bridge
+    const pts = [];
+    hp.forEach((h, i) => { const p = hp[i - 1]; if (p && h.t - p.t > 30 * MIN) pts.push({ t: p.t + 30 * MIN, v: p.value }, { t: p.t + 30 * MIN, v: NaN }); pts.push({ t: h.t, v: h.value }); });
+    pts.push({ t: hp[hp.length - 1].t + 30 * MIN, v: hp[hp.length - 1].value });
+    g.append('path').datum(pts).attr('fill', 'none').attr('stroke', css('--s2')).attr('stroke-width', span > 96 * HOUR ? 1.25 : 1.75).attr('stroke-linejoin', 'round')
+      .attr('d', d3.line().curve(d3.curveStepAfter).defined(p => Number.isFinite(p.v)).x(p => x(p.t)).y(p => y(p.v)));
+  }
+  // a threshold at or below 0 is met all the time and needs no line
+  for (const [name, v] of Object.entries(d.thresholds || {})) if (v > 0 && v <= y.domain()[1]) {
+    g.append('line').attr('x1', m.left).attr('x2', width - m.right).attr('y1', y(v)).attr('y2', y(v)).attr('stroke', css('--s3')).attr('stroke-width', 1.5).attr('stroke-dasharray', '3 4');
+    svg.append('text').attr('x', m.left + 4).attr('y', y(v) - 4).attr('font-size', 10).attr('fill', css('--ink-2')).attr('stroke', css('--surface')).attr('stroke-width', 3).attr('paint-order', 'stroke').text(`${name}: Kp ${v.toFixed(1)}`);
+  }
+  svg.append('line').attr('x1', x(d.now)).attr('x2', x(d.now)).attr('y1', m.top).attr('y2', y0 + 4).attr('stroke', css('--ink')).attr('stroke-width', 1.5).attr('opacity', 0.6);
+  // hours within a day, the weekday at midnight
+  const every = span <= 36 * HOUR ? d3.utcHour.every(narrow ? 6 : 3) : span <= 96 * HOUR ? (narrow ? d3.utcDay.every(1) : d3.utcHour.every(12)) : d3.utcDay.every(narrow ? 2 : 1);
+  const tick = (t) => (t.getUTCHours() === 0 ? d3.utcFormat('%a %d')(t) : d3.utcFormat('%H:%M')(t));
+  svg.append('g').attr('class', 'axis').attr('transform', `translate(0,${y0})`).call(d3.axisBottom(x).ticks(every).tickFormat(tick).tickSizeOuter(0)).selectAll('text').attr('fill', css('--ink-2'));
+  svg.append('g').attr('class', 'axis').attr('transform', `translate(${m.left},0)`).call(d3.axisLeft(y).ticks(Math.min(10, y.domain()[1])).tickFormat(d3.format('d')).tickSizeOuter(0)).selectAll('text').attr('fill', css('--ink-2'));
+  const tip = tooltip(container);
+  const byT = new Map(blocks.map(b => [b.t, b]));
+  const slots = []; for (let t = d.xMin; t < d.xMax; t += BLOCK) if (t <= d.now) slots.push(t);
+  const kpCell = (v) => `${fmt.kp(v)} <span class="sub">${fmt.num(v, 2)}</span>`;
+  svg.selectAll(null).data(slots).enter().append('rect').attr('x', t => x(t)).attr('width', t => Math.max(1, x(t + BLOCK) - x(t))).attr('y', m.top).attr('height', plotH).attr('fill', 'transparent')
+    .on('pointerenter', (ev, t) => {
+      const b = byT.get(t), r = run && run.t === t ? run : null, halves = hp.filter(h => h.t >= t && h.t < t + BLOCK);
+      bars.attr('opacity', q => (q.t === t ? 0.8 : 0.55));
+      const rows = [];
+      if (b && Number.isFinite(b.gfz)) rows.push([`Kp, GFZ${b.status ? ` (${esc(statusText(b.status))})` : ''}`, kpCell(b.gfz)]);
+      if (b && Number.isFinite(b.noaa)) rows.push(['Kp, NOAA', kpCell(b.noaa)]);
+      if (b && b.source === 'NOAA running') rows.push(['Kp, NOAA (final minute)', kpCell(b.kp)]);
+      if (r) rows.push([`NOAA so far (${fmt.hm(r.at)} UTC)`, kpCell(r.kp)]);
+      if (halves.length) rows.push(['Hp30, half-hourly', halves.map(h => fmt.kp(h.value)).join(' ')]);
+      const level = stormLevel(b ? b.kp : r ? r.kp : NaN).label;
+      if (level) rows.push(['level', level + (r && !b ? ' so far' : '')]);
+      if (!rows.length) rows.push(['no data', '']);
+      const [px, py] = d3.pointer(ev, svg.node());
+      tip.show(px * (container.clientWidth / width), py * (container.clientWidth / width), `<div class="t">${fmt.dayUtc(t)} · ${fmt.block(t)} UTC (${fmt.hmLocal(t)}–${fmt.hmLocal(t + BLOCK)} local)</div><table>${rows.map(q => `<tr><td>${q[0]}</td><td class="v">${q[1]}</td></tr>`).join('')}</table>`);
+    })
+    .on('pointerleave', () => { bars.attr('opacity', 0.55); tip.hide(); });
 }
 
 /**

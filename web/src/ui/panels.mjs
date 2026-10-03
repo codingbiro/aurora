@@ -1,5 +1,6 @@
 // DOM panels: verdict, tiles, freshness, night cards, CME cards, alerts, agreement, discussion, tables, method.
 import { el, clear, fmt } from './format.mjs';
+import { BLOCK, stormLevel, statusText } from '../model/kphistory.mjs';
 
 /** Set text only when it changed: the headline sits in a live region, and every rewrite is read out again. */
 function setText(node, text) { if (node.textContent !== text) node.textContent = text; }
@@ -23,7 +24,8 @@ export function renderVerdict(fc, obs, mag, extra = {}) {
       : ['Needs: camera / eye dark site / eye city / overhead', `Kp ${fmt.num(tt.camera, 1)} / ${fmt.num(tt.eyeDark, 1)} / ${fmt.num(tt.eyeCity, 1)} / ${fmt.num(tt.overhead, 1)}`],
   ];
   if (Number.isFinite(extra.hp30)) rows.splice(3, 0, ['Hp30 observed (GFZ)', fmt.num(extra.hp30, 2)]);
-  if (Number.isFinite(extra.kpObs)) rows.splice(3, 0, ['Kp estimated (NOAA)', fmt.num(extra.kpObs, 2)]);
+  // NOAA's running value restarts at 0 every three hours, so it says which block it covers
+  if (Number.isFinite(extra.kpObs)) rows.splice(3, 0, [`Kp NOAA, ${fmt.block(Math.floor(extra.kpObsT / BLOCK) * BLOCK)} UTC so far`, fmt.num(extra.kpObs, 2)]);
   if (extra.dst) rows.push(['Dst (' + extra.dst.source + ')', `${fmt.int(extra.dst.value)} nT${Number.isFinite(fc.current.dstBoundary) ? `, storm edge ${fmt.deg(fc.current.dstBoundary)}` : ''}`]);
   if (extra.geoMos) rows.push(['Geospace Kp correction', `${fmt.signed(extra.geoMos.a, 2)} + ${fmt.num(extra.geoMos.b, 2)}×Kp (7 d, RMSE ${fmt.num(extra.geoMos.rmse, 2)} vs ${fmt.num(extra.geoMos.rmseRaw, 2)} raw)`]);
   if (extra.sky) rows.push(['Sun / moon', `${fmt.num(extra.sky.elevation, 0)}° (${extra.sky.class})${extra.sky.window ? `, dark ${fmt.hmLocal(extra.sky.window.start)}–${fmt.hmLocal(extra.sky.window.end)}` : ', no darkness'}, moon ${fmt.pct(extra.sky.moonIllumination)}`]);
@@ -145,6 +147,51 @@ export function renderHorizonTable(fc) {
   t.append(tb);
 }
 
+/**
+ * Measured-Kp tiles. s: kpSummary ({now, block, last, max24, max7}); d: {thresholds {horizon, overhead} | undefined}.
+ * The bar under a tile says what that Kp means at the chosen place, as everywhere else on the page.
+ */
+export function renderKpTiles(s, d = {}) {
+  const box = clear(document.getElementById('kp-tiles'));
+  const th = d.thresholds || {};
+  const cls = (kp) => (!Number.isFinite(kp) ? 'none' : kp >= th.overhead ? 'overhead' : kp >= th.horizon ? 'horizon' : 'none');
+  const level = (kp) => stormLevel(kp).label;
+  const when = (b) => `${fmt.dayUtc(b.t)} ${fmt.block(b.t)}${b.inProgress ? ' so far' : ''}`;
+  const last = s.last, from = !last ? '' : last.source === 'GFZ' ? `${['GFZ', statusText(last.status)].filter(Boolean).join(' ')}${Number.isFinite(last.noaa) ? `, NOAA ${fmt.kp(last.noaa)}` : ''}` : last.source === 'NOAA' ? 'NOAA; GFZ not out yet' : 'NOAA, final minute';
+  const storm7 = s.max7 && stormLevel(s.max7.kp).g ? ` · ${level(s.max7.kp)}` : '';
+  const items = [
+    { h: 'Kp now', v: fmt.kp(s.now?.kp), s: s.now ? `Hp30 (GFZ, half-hourly) ${fmt.hm(s.now.t0)}–${fmt.hm(s.now.t1)} UTC · ${level(s.now.kp)}` : 'waiting for GFZ Hp30', cls: cls(s.now?.kp) },
+    { h: 'This 3-hour block so far', v: fmt.kp(s.block?.kp), s: s.block ? `${fmt.block(s.block.t)} UTC after ${fmt.int((s.block.at - s.block.t) / 60e3)} min · NOAA; restarts at 0 every 3 h` : 'waiting for NOAA', cls: cls(s.block?.kp) },
+    { h: 'Last 3-hour Kp', v: fmt.kp(last?.kp), s: last ? `${fmt.block(last.t)} UTC · ${from}` : 'waiting for GFZ and NOAA', cls: cls(last?.kp) },
+    { h: 'Highest, 24 h / 7 days', v: `${fmt.kp(s.max24?.kp)} / ${fmt.kp(s.max7?.kp)}`, s: s.max24 && s.max7 ? `${when(s.max24)} / ${when(s.max7)} UTC${storm7}` : '', cls: cls(s.max24?.kp) },
+  ];
+  for (const it of items) box.append(el('div', { class: `tile ${it.cls}`, role: 'listitem' }, [el('div', { class: 'tile-h', text: it.h }), el('div', { class: 'tile-value', text: it.v }), el('div', { class: 'tile-sub', text: it.s })]));
+}
+
+/**
+ * The 3-hour Kp by UTC day, newest first: blocks (kpBlocks), running (runningBlock or null), days (UTC midnights).
+ * Values not from GFZ are starred; the block in progress is in italics.
+ */
+export function renderKpTable(blocks, running, days, now) {
+  const t = clear(document.getElementById('kp-table'));
+  const head = ['Day (UTC)', ...[0, 3, 6, 9, 12, 15, 18, 21].map(h => String(h).padStart(2, '0')), 'Highest'];
+  t.append(el('thead', {}, el('tr', {}, head.map((h, i) => el('th', { class: i ? 'num' : '', text: h })))));
+  const byT = new Map(blocks.map(b => [b.t, b]));
+  const detail = (b) => [Number.isFinite(b.gfz) ? ['GFZ', statusText(b.status), fmt.num(b.gfz, 2)].filter(Boolean).join(' ') : '', Number.isFinite(b.noaa) ? `NOAA ${fmt.num(b.noaa, 2)}` : '', b.source === 'NOAA running' ? `NOAA, final minute ${fmt.num(b.kp, 2)}` : ''].filter(Boolean).join(' · ');
+  const tb = el('tbody');
+  for (const day of days) {
+    const cells = [], vals = [];
+    for (let i = 0; i < 8; i++) {
+      const t0 = day + i * BLOCK, b = byT.get(t0), r = running && running.t === t0 ? running : null;
+      if (b) { vals.push(b.kp); cells.push(el('td', { class: 'num', title: detail(b), text: fmt.kp(b.kp) + (b.source === 'GFZ' ? '' : '*') })); }
+      else if (r) { vals.push(r.kp); cells.push(el('td', { class: 'num running', title: `NOAA's running estimate at ${fmt.hm(r.at)} UTC`, text: fmt.kp(r.kp) })); }
+      else cells.push(el('td', { class: 'num', text: t0 > now ? '' : '–' }));
+    }
+    tb.append(el('tr', {}, [el('td', { text: fmt.dayUtc(day) }), ...cells, el('td', { class: 'num max', text: vals.length ? fmt.kp(Math.max(...vals)) : '–' })]));
+  }
+  t.append(tb);
+}
+
 export function renderLegend(id, items) {
   const box = clear(document.getElementById(id));
   for (const it of items) box.append(el('span', { class: it.kind || '', style: `--c:${it.color}`, text: it.label }));
@@ -158,6 +205,7 @@ export function renderMethod() {
     ['Visibility tiers', 'The 8° envelope of Case et al. 2016 fits camera reports from dark sites, so it defines the "camera" tier. AuroraWatch UK\'s calibration at 51–54° magnetic latitude (50 nT camera, 100 nT naked eye at a dark site, 200 nT naked eye anywhere) and the geometry of a 100–250 km emission layer give about 5° for the naked eye from a dark site (the headline number outside the auroral zone) and 3° from a light-polluted city. Below 63° magnetic latitude a storm-level oval is a continuous glow, so the substorm phase only modulates the fainter tiers and never below one half. Local magnetometers (Tormestorp, Hel) and AuroraWatch UK\'s level floor the tiers they already show for the next half hour.'],
     ['Index blend', 'The index forecast is the calibrated regression (a + d√coupling + b·coupling + c·viscous, refit on two years of GFZ Hp30) blended with the last observed Hp30 using weights fitted per lead on the same archive (0.65 at +0, 0.45 at +30, 0.40 beyond), and its probability spread is the measured error of that blend (0.60 at +0 to 0.90 at +120 min). NOAA\'s Geospace Kp enters after a linear correction refitted every 15 minutes on the last week of overlap with observed Hp30; GFZ\'s Hpo forecast carries half weight inside the first hour. Every ensemble member reads the propagated solar wind with its own arrival-time offset (10-minute spread, clipped at ±20 min), the timing error of the flat-plane L1 shift.'],
     ['Verification', 'The Worker\'s 5-minute job logs the tier probabilities at +10, +30 and +60 min for every configured place, together with the observed Hp30, Dst, AuroraWatch UK\'s level and Tormestorp\'s K at that moment. The model-check page scores them against what followed (Hp30 exceedances, AuroraWatch levels) and against your own sighting reports from the buttons above the timeline.'],
+    ['Measured Kp', 'Kp is a 3-hour index. GFZ Potsdam, which produces the official Kp, publishes each block within minutes of its end and marks it preliminary until it is final, weeks later; NOAA\'s value from its eight real-time stations stands in until GFZ\'s arrives. "Kp now" is Hp30, GFZ\'s Kp-scaled index for every half hour, so it does not wait for a block to end. NOAA\'s running estimate for the block in progress is computed from the part of the block that has passed: it restarts at 0 every three hours and builds up as the block goes on, so early in a block it understates the activity. The bars are drawn against your thresholds and the hours when the sun is more than 12° below your horizon.'],
     ['Substorms', 'The twelve Finnish IMAGE magnetometers (58 to 70°N) are combined into the IL and IU electrojet indicators the way FMI does it: quiet baselines from the calmest three-hour window of the day, IL the lowest and IU the highest deviation across the chain. Onsets are detected on IL with the Newell & Gjerloev (2011) SuperMAG criterion (drops of 15, 30 and 45 nT in the first three minutes, then at least 100 nT below the onset level for half an hour; provisional after three minutes, confirmed after thirty). The westward electrojet is located from the X profile and the sign change of Z across the chain. A minimal substorm model (energy loading at the Akasofu rate, release about every 2.7 h under steady driving) gives the chance of the next onset; the chance that it happens in your sky follows the IMAGE FUV onset climatology (median 23 MLT, latitude 73° − 5.2√Em from the merging electric field) and the average reach of the expanding bulge (about 5° poleward within the hour, roughly 1.5 h of local time either side). FMI\'s own aurora indicator, the hourly maximum of the minute-to-minute change of the horizontal field, is shown against the station thresholds FMI published (85 % of exceedances came with aurora at Sodankylä).'],
     ['Next three nights', 'NOAA\'s 3-hourly Kp forecast and its daily probabilities of active, minor, moderate and strong storms, GFZ\'s 72-hour ensemble, NASA DONKI CME arrival predictions (±7 h, Kp range by field orientation) and WSA-Enlil\'s predicted solar wind speed at Earth. The night probabilities average these estimates for the Kp your latitude needs.'],
     ['27-day recurrence', 'High-speed streams from long-lived coronal holes return every solar rotation, so the solar wind measured one rotation ago (27.3 days, NOAA\'s real-time archive of the L1 spacecraft) is drawn as a forecast for the next five days, where the WSA-Enlil run has already ended. Near solar minimum and in the declining phase it matches numerical models point by point (Owens et al. 2013); a CME seen a rotation ago repeats in it as a false stream. It replaces the CLEAR ambient model on iSWA, whose runs stopped on 23 September 2026; CLEAR comes back by itself if its runs resume.'],

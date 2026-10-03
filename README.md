@@ -3,6 +3,7 @@
 Northern lights forecast for one place, built from the sources that actually carry skill:
 
 - **Next two hours**: the solar wind already measured 1.5 million km upstream (SOLAR-1, IMAP, ACE via NOAA), time-shifted to Earth, run through the Newell coupling function and OVATION Prime's 4-hour weighting, mapped to Hp30 with a regression calibrated on two years of GFZ Hp30 and blended with the last observed Hp30 using weights and spreads fitted per lead on the same archive, compared with the auroral oval's equatorward edge at your magnetic local time (OVATION Prime, the Starkov oval, and the ring-current edge from Dst during storms), and turned into visibility tiers: camera on a dark northern horizon (edge within 8°, the Case et al. 2016 envelope), naked eye from a dark site (5°, the headline number outside the auroral zone), naked eye from a light-polluted city (3°), overhead. Outside the auroral zone the substorm phase only modulates the faint tiers; inside it the substorm section is the forecast. Local magnetometers (Tormestorp 130 km from Copenhagen, Hel, AuroraWatch UK's level) floor the tiers they already show for the next half hour, and the sky line gives sun elevation, tonight's dark window and the moon.
+- **Measured Kp**: the index as measured, not forecast. Kp now is GFZ's Hp30 for the last half hour (Kp-scaled, every 30 minutes); then the block in progress so far (NOAA's running estimate, which restarts at 0 every three hours, so it understates activity early in a block), the last finished 3-hour Kp and the highest of the last 24 hours and 7 days. A chart of the last 24 hours, 3 days or 7 days shows the 3-hour Kp from GFZ Potsdam (the official index; NOAA's value until GFZ publishes a block) with Hp30 as a half-hourly line, your thresholds and the hours of darkness at your place, with a table by day.
 - **Substorms**: the twelve Finnish IMAGE magnetometers combined into the IL/IU electrojet indicators the way FMI does it, onsets by the Newell & Gjerloev criterion (provisional after 3 minutes, confirmed after 30), the latitude of the westward electrojet from the X and Z profile across the chain, the phase, the chance of the next onset from a minimal substorm model, and, for your place, whether that onset would be in your sky (onset climatology: median 23 MLT, latitude 73° − 5.2√Em) with the prime window tonight, FMI's own dB/dt aurora indicator and the nearest Tromsø Geophysical Observatory K-index. In the auroral zone (Tromsø, Lapland) this section is the forecast: the oval is overhead on most nights there and the substorm cycle decides between a faint arc and a display. See [research/substorms_auroral_zone.md](research/substorms_auroral_zone.md).
 - **Next three nights**: NOAA's 3-hourly Kp forecast and storm probabilities, GFZ's 72-hour ensemble, NASA DONKI CME arrival predictions (±7 h, Kp range by field orientation) WSA-Enlil's predicted solar wind at Earth and, for the days after the Enlil run ends, the 27-day recurrence (the solar wind measured one solar rotation ago, the benchmark that matches numerical models near solar minimum, Owens et al. 2013; it replaced NASA's CLEAR ambient model, whose runs stopped on 2026-09-23), turned into a probability per night for your latitude.
 
@@ -17,7 +18,7 @@ Clouds are ignored; the sky line shows sun elevation, tonight's dark window and 
 ```bash
 npm install
 npm run dev          # http://localhost:8787  (static site + /api proxy in one Node process)
-npm test             # 188 offline unit tests (node:test)
+npm test             # 198 offline unit tests (node:test)
 npm run smoke        # pull live data and print the two-hour forecast for Copenhagen in the terminal
 npm run calibrate    # refit Hp30 coefficients, blend weights and spreads from GFZ + OMNI (downloads ~150 MB once, cached)
 node calibration/hindcast.mjs 2 52.42 23   # two-year hindcast of the decision for one magnetic latitude: base rates, skill by lead, Brier, reliability
@@ -61,6 +62,7 @@ Redeploy after editing (`npm run worker:deploy`). The place shown in the dashboa
 ```
 web/            static app: index.html, verify.html, src/{data,model,ui}, data/ (coefficients, AACGM grid), vendor/ (d3, topojson, land)
                 model/electrojet.mjs: chain baselines, IL/IU/IE, onset criterion, electrojet location; model/substorm.mjs: phase, hazard, onset climatology, observer outlook
+                model/kphistory.mjs: measured Kp (GFZ and NOAA 3-hour blocks, NOAA's running estimate, the tile summary)
 worker/src/     Cloudflare Worker: proxy.mjs (shared with the dev server), scheduled.mjs (cron), index.mjs
 scripts/        dev-server.mjs, smoke.mjs
 calibration/    Node job that fits web/data/coefficients.json from GFZ Hp30 + OMNI, plus CME Scoreboard statistics
